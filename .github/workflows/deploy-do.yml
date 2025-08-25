@@ -1,0 +1,18 @@
+name: Deploy DO
+on:
+  push:
+    branches: [ main ]
+    paths:
+      - "do-worker/**"
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Publish DO
+        uses: cloudflare/wrangler-action@v3
+        with:
+          apiToken: ${{ secrets.CF_API_TOKEN }}
+          accountId: ${{ secrets.CF_ACCOUNT_ID }}
+          workingDirectory: do-worker
+          command: deploy

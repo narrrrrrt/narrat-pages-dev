@@ -1,0 +1,34 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Reversi Lobby</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <style>
+    body { font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif; margin: 24px; }
+    h1 { margin: 0 0 16px; }
+    .grid { display: grid; grid-template-columns: repeat(2, minmax(280px, 1fr)); gap: 16px; }
+    .room { border: 1px solid #ddd; border-radius: 8px; padding: 12px; }
+    .room h2 { margin: 0 0 8px; font-size: 18px; }
+    .seats { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+    .seat { border: 1px solid #ccc; border-radius: 6px; padding: 8px; background: #fafafa; }
+    .seat strong { display: inline-block; width: 3em; }
+    .btns { display: flex; gap: 6px; margin-top: 8px; }
+    button { cursor: pointer; padding: 6px 10px; border-radius: 6px; border: 1px solid #bbb; background: white; }
+    .dev { margin-top: 16px; }
+    .status { margin-top: 12px; color: #666; font-size: 12px; }
+    .vacant { font-weight: 600; }
+  </style>
+</head>
+<body>
+  <h1>Lobby</h1>
+  <div class="grid" id="rooms"></div>
+
+  <div class="dev">
+    <button id="reset">Reset DB (dev)</button>
+  </div>
+  <div class="status" id="status">Connecting…</div>
+
+  <script src="./lobby.js" defer></script>
+</body>
+</html>

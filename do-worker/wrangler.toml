@@ -1,0 +1,13 @@
+name = "reversi-do"
+main = "worker.ts"
+compatibility_date = "2025-08-01"
+
+[durable_objects]
+bindings = [
+  { name = "REVERSI_HUB", class_name = "ReversiHub" }
+]
+
+# ★初回は new_sqlite_classes を必ず使う（Freeプランのハマり防止）
+[[migrations]]
+tag = "v0"
+new_sqlite_classes = ["ReversiHub"]

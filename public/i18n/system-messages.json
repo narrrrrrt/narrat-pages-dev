@@ -1,0 +1,18 @@
+{
+  "vacant": {
+    "en": "Vacant",
+    "de": "Frei",
+    "it": "Libero",
+    "fr": "Libre",
+    "es": "Libre",
+    "ja": "空き"
+  },
+  "opponent_left": {
+    "en": "Your opponent has left.",
+    "de": "Ihr Gegner hat den Raum verlassen.",
+    "it": "Il tuo avversario ha lasciato.",
+    "fr": "Votre adversaire a quitté la partie.",
+    "es": "Tu oponente ha salido.",
+    "ja": "対戦相手が退室しました。"
+  }
+}
