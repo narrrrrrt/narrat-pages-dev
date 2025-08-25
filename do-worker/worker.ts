@@ -5,7 +5,7 @@ export interface Env {
 type Lang = 'en'|'de'|'it'|'fr'|'es'|'ja';
 const SUP_LANGS: Lang[] = ['en','de','it','fr','es','ja'];
 
-// ---- I18N（外部JSONを取得。失敗時はデフォルト英語にフォールバック） ----
+// ---- I18N（外部JSONを取得。失敗時はデフォルト英語にフォールバック） ---- 
 type I18nMap = {
   vacant?: Record<Lang,string>;
   opponent_left: Record<Lang,string>;
