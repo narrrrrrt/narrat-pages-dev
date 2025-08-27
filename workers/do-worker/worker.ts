@@ -96,6 +96,11 @@ function countBW(board:string[]): {B:number,W:number}{
 
 const tokShort = (t?:string)=> t ? `${t.slice(0,2)}******` : '';
 
+// --- 構造化ログ（printf置換の不安定さ回避） ---
+const slog = (type: string, fields: Record<string, any> = {}) => {
+  try { console.log(JSON.stringify({ type, t: Date.now(), ...fields })); } catch { /* ignore */ }
+};
+
 export class ReversiHub {
   state: DurableObjectState;
   rooms = new Map<number,RoomState>();
@@ -154,7 +159,7 @@ export class ReversiHub {
     if (url.pathname==='/move'   && req.method==='POST') return this.handleMove(req);
     if (url.pathname==='/admin'  && req.method==='POST') {
       for (const n of [1,2,3,4]) this.rooms.set(n, { watchers:0, board: initialBoard(), turn:null, status:'waiting' });
-      console.log('[ADMIN] reset all rooms');
+      slog('ADMIN_RESET', {});
       this.broadcastLobby(); for (const n of [1,2,3,4]) this.broadcastRoom(n);
       return json({ok:true});
     }
@@ -168,9 +173,9 @@ export class ReversiHub {
         this.lobbyClients.add(client);
         controller.enqueue(encoder('event: room_state\ndata: '+JSON.stringify(this.snapshotAll())+'\n\n'));
         if (this.lobbyClients.size===1) this.startPinger(this.lobbyClients);
-        console.log('[SSE][lobby] +client total=', this.lobbyClients.size);
+        slog('SSE_LOBBY_ADD', { total: this.lobbyClients.size });
       },
-      cancel: () => { console.log('[SSE][lobby] cancel'); }
+      cancel: () => { slog('SSE_LOBBY_CANCEL', {}); }
     });
     return new Response(stream, sseHeaders());
   }
@@ -184,7 +189,7 @@ export class ReversiHub {
         if (seat==='observer'){ const r=this.rooms.get(room)!; r.watchers++; this.broadcastLobby(); }
         controller.enqueue(encoder('event: room_state\ndata: '+JSON.stringify(this.snapshot(room, seat))+'\n\n'));
         if (clients.size===1) this.startPinger(clients);
-        console.log('[SSE][room] +client room=%d seat=%s sse=%s total=%d', room, seat, (sseId||'-'), clients.size);
+        slog('SSE_ROOM_ADD', { room, seat, sseId, total: clients.size });
       }
     });
 
@@ -195,9 +200,18 @@ export class ReversiHub {
           if (c.seat===seat && c.sseId===sseId){ this.roomClients.get(room)!.delete(c); break; }
         }
         const r = this.rooms.get(room)!;
-        if (seat==='observer'){ r.watchers=Math.max(0,(r.watchers||0)-1); this.broadcastLobby(); this.broadcastRoom(room); }
-        else if (sseId){ const info = this.findBySseId(sseId); if (info && info.room===room) { console.log('[LEAVE][onclose] room=%d seat=%s via sse=%s', room, info.seat, sseId); this.leaveByTokenInfo(info); } }
-        console.log('[SSE][room] -client room=%d seat=%s total=%d', room, seat, this.roomClients.get(room)!.size);
+        if (seat==='observer'){
+          r.watchers=Math.max(0,(r.watchers||0)-1);
+          this.broadcastLobby(); this.broadcastRoom(room);
+        }
+        else if (sseId){
+          const info = this.findBySseId(sseId);
+          if (info && info.room===room) {
+            slog('LEAVE_ONCLOSE', { room, seat: info.seat, sseId });
+            this.leaveByTokenInfo(info);
+          }
+        }
+        slog('SSE_ROOM_DEL', { room, seat, total: this.roomClients.get(room)!.size });
       }catch(e){ console.warn('cancel err', e); }
       if (origCancel) await origCancel(reason);
     };
@@ -224,15 +238,17 @@ export class ReversiHub {
           this.tokenMap.set(token, { room, seat: wantSeat, sseId });
           if (sseId) this.sseMap.set(sseId, { room, seat: wantSeat });
           if (r.black && r.white){ r.status='playing'; r.turn='black'; }
-          console.log('[JOIN] room=%d seat=%s token=%s seats={B:%s W:%s} status=%s turn=%s',
-            room, wantSeat, tokShort(token), !!r.black, !!r.white, r.status, r.turn);
+          slog('JOIN', {
+            room, seat: wantSeat, token: tokShort(token),
+            seats: { B: !!r.black, W: !!r.white }, status: r.status, turn: r.turn
+          });
         } else {
           seat = 'observer';
-          console.log('[JOIN->OBS] room=%d want=%s (occupied)', room, wantSeat);
+          slog('JOIN_TO_OBS', { room, want: wantSeat });
         }
       }else{
         seat='observer';
-        console.log('[JOIN] room=%d seat=observer', room);
+        slog('JOIN_OBS', { room });
       }
       const hdr = new Headers({'Content-Type':'application/json'});
       if (token) hdr.set('X-Play-Token', token);
@@ -244,12 +260,12 @@ export class ReversiHub {
       const token = req.headers.get('X-Play-Token') || '';
       if (token){
         const info = this.tokenMap.get(token);
-        if (info){ console.log('[LEAVE] room=%d seat=%s token=%s', info.room, info.seat, tokShort(token)); this.leaveByTokenInfo(info); }
+        if (info){ slog('LEAVE', { room: info.room, seat: info.seat, token: tokShort(token) }); this.leaveByTokenInfo(info); }
         const hdr = new Headers({'Content-Type':'application/json','X-Log-Event':'token-deleted'});
         return new Response(JSON.stringify(this.snapshot(room)), {status:200, headers:hdr});
       }else if (sseId && this.sseMap.has(sseId)){
         const info = this.sseMap.get(sseId)!;
-        console.log('[LEAVE][sseId] room=%d seat=%s sse=%s', info.room, info.seat, sseId);
+        slog('LEAVE_BY_SSEID', { room: info.room, seat: info.seat, sseId });
         this.leaveByTokenInfo(info);
         const hdr = new Headers({'Content-Type':'application/json','X-Log-Event':'token-deleted'});
         return new Response(JSON.stringify(this.snapshot(info.room)), {status:200, headers:hdr});
@@ -297,7 +313,7 @@ export class ReversiHub {
     }
 
     const {B,W}=countBW(r.board);
-    console.log('[MOVE] room=%d seat=%s pos=%s -> turn=%s counts B=%d W=%d', room, info.seat, pos, r.turn||'-', B, W);
+    slog('MOVE', { room, seat: info.seat, pos, nextTurn: r.turn, counts: { B, W } });
 
     const hdr = new Headers({'Content-Type':'application/json'});
     const snap = this.snapshot(room);
