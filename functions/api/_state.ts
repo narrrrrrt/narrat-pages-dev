@@ -149,7 +149,6 @@ export function applyLeave(room: number, seat: Seat) {
     r.status = "leave";           // UI: popup → waiting へ
     r.turn = "-";
   } else {
-    // spectator leave doesn't change status/turn
     if (r.seats.black !== "taken" || r.seats.white !== "taken") {
       r.status = "waiting";
       r.turn = "-";
@@ -165,4 +164,26 @@ export function makeToken(len = 8): string {
   let s = "";
   for (let i = 0; i < len; i++) s += alphabet[buf[i] % alphabet.length];
   return s;
+}
+
+// ---- DEBUG: 全初期化 ------------------------------------------
+export function resetAll() {
+  tokens.clear(); // トークン全消し
+
+  // ルーム状態を作り直す（購読は維持）
+  rooms.clear();
+  for (const n of [1, 2, 3, 4]) {
+    rooms.set(n, {
+      room: n,
+      seats: { black: "vacant", white: "vacant" },
+      watchers: 0,
+      status: "waiting",
+      turn: "-",
+      board: { size: 8, stones: startingBoard() },
+    });
+  }
+
+  // ロビー＆各ルームへ即時プッシュ
+  broadcast(undefined);
+  for (const n of [1, 2, 3, 4]) broadcast(n);
 }

@@ -1,62 +1,48 @@
-// functions/index.ts  (v0.3)
-import {
-  getLobbySnapshot,
-  getRoomSnapshot,
-  subscribeLobby,
-  subscribeRoom,
-} from "./api/_state";
+// functions/index.ts -- v0.4a
+// 目的:
+//  - Accept: text/event-stream のとき **Durable Object(ReversiHub)の /sse** にプロキシ
+//  - 非SSEで ?room=... が付いているときは /reverse.html を返す（URLは "/" のまま）
+//  - それ以外は静的配信（/index.html 等）
+//
+// 備考:
+//  - v0.4 で残っていたプレースホルダーJSON応答を完全排除
+//  - クエリ (?room=..., ?seat=...) は DO へそのまま継承
 
 function isSSE(request: Request): boolean {
   const accept = request.headers.get("accept") || "";
   return accept.includes("text/event-stream");
-}
-function sseHeaders(): Headers {
-  return new Headers({
-    "content-type": "text/event-stream; charset=utf-8",
-    "cache-control": "no-cache, no-transform",
-    "pragma": "no-cache",
-  });
 }
 
 export const onRequestGet: PagesFunction = async (context) => {
   const { request, env, next } = context;
   const url = new URL(request.url);
 
-  // 1) SSE
+  // 1) SSE: DO "/sse" へプロキシ
   if (isSSE(request)) {
-    const { readable, writable } = new TransformStream();
-    const writer = writable.getWriter();
-    const enc = new TextEncoder();
-    const write = (s: string) => writer.write(enc.encode(s));
+    // Durable Object: 固定ID "global" を使用（単一ハブ）
+    const id = (env as any).REVERSI_HUB.idFromName("global");
+    const stub = (env as any).REVERSI_HUB.get(id);
 
-    const roomParam = url.searchParams.get("room") || "all";
-    if (roomParam === "all") {
-      // 初回
-      write(`event: room_state\ndata: ${JSON.stringify(getLobbySnapshot())}\n\n`);
-      // 購読
-      subscribeLobby(write, request.signal);
-    } else {
-      const room = Number(roomParam);
-      write(`event: room_state\ndata: ${JSON.stringify(getRoomSnapshot(room))}\n\n`);
-      subscribeRoom(room, write, request.signal);
-    }
+    const target = new URL("https://do/sse");
+    target.search = url.search; // room=all / room=1&seat=... 等を引き継ぎ
 
-    const interval = setInterval(() => write(`: ping ${Date.now()}\n\n`), 3000);
-    request.signal.addEventListener("abort", () => {
-      clearInterval(interval);
-      writer.close();
-    });
+    // EventSource 互換のヘッダでGET
+    const init: RequestInit = {
+      method: "GET",
+      headers: { accept: "text/event-stream" },
+    };
 
-    return new Response(readable, { headers: sseHeaders() });
+    // そのまま DO のレスポンスを返す（content-type: text/event-stream）
+    return await stub.fetch(target.toString(), init);
   }
 
-  // 2) 非SSEで ?room= が付いている → reverse.html を返す（URLは / のまま）
+  // 2) 非SSE: ?room= が付いていれば /reverse.html を返す（URLは "/" のまま）
   if (url.searchParams.has("room")) {
     const u = new URL(request.url);
     u.pathname = "/reverse.html";
-    return env.ASSETS.fetch(new Request(u.toString(), request));
+    return (env as any).ASSETS.fetch(new Request(u.toString(), request));
   }
 
-  // 3) 静的配信
+  // 3) 静的（ロビー等）
   return next();
 };

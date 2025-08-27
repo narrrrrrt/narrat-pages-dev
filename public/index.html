@@ -7,89 +7,101 @@
   <link rel="stylesheet" href="/style.css">
 </head>
 <body>
-  <header>
+  <header class="header">
     <h1>Reversi Lobby</h1>
+    <!-- デバッグ全初期化（?admin=1 の時だけ表示） -->
+    <button id="debug-reset" style="display:none;margin-left:auto">Reset (ALL)</button>
   </header>
 
-  <main id="lobby">
-    <section class="boards">
-      <div class="board-card" data-room="1">
-        <h2>Room 1</h2>
-        <div class="seats">
-          <button class="seat" data-seat="black" disabled>Black</button>
-          <button class="seat" data-seat="white" disabled>White</button>
-          <button class="watch">Spectator</button>
-        </div>
-        <div class="meta"><span class="watchers">Watching: 0</span></div>
-      </div>
-      <div class="board-card" data-room="2">
-        <h2>Room 2</h2>
-        <div class="seats">
-          <button class="seat" data-seat="black" disabled>Black</button>
-          <button class="seat" data-seat="white" disabled>White</button>
-          <button class="watch">Spectator</button>
-        </div>
-        <div class="meta"><span class="watchers">Watching: 0</span></div>
-      </div>
-      <div class="board-card" data-room="3">
-        <h2>Room 3</h2>
-        <div class="seats">
-          <button class="seat" data-seat="black" disabled>Black</button>
-          <button class="seat" data-seat="white" disabled>White</button>
-          <button class="watch">Spectator</button>
-        </div>
-        <div class="meta"><span class="watchers">Watching: 0</span></div>
-      </div>
-      <div class="board-card" data-room="4">
-        <h2>Room 4</h2>
-        <div class="seats">
-          <button class="seat" data-seat="black" disabled>Black</button>
-          <button class="seat" data-seat="white" disabled>White</button>
-          <button class="watch">Spectator</button>
-        </div>
-        <div class="meta"><span class="watchers">Watching: 0</span></div>
-      </div>
-    </section>
+  <main id="lobby" class="lobby">
+    <div id="boards" class="boards"></div>
+    <p id="lobby-note" class="note" style="display:none;"></p>
   </main>
 
   <script>
-    // ===== SSE: ロビーまとめ配信（/?room=all） =====
-    (function(){
-      const sseUrl = new URL(location.origin + "/");
-      sseUrl.searchParams.set("room", "all");
-      const es = new EventSource(sseUrl, { withCredentials: false });
-      es.addEventListener("room_state", (ev) => {
-        try {
-          const data = JSON.parse(ev.data);
-          if (!data || !data.state || !data.state.boards) return;
-          for (const b of data.state.boards) {
-            const card = document.querySelector('.board-card[data-room="'+b.room+'"]');
-            if (!card) continue;
-            const seats = card.querySelectorAll('.seat');
-            // vacant / taken を反映
-            seats[0].disabled = (b.seats?.black === "taken");
-            seats[1].disabled = (b.seats?.white === "taken");
-            card.querySelector('.watchers').textContent = "Watching: " + (b.watchers ?? 0);
-          }
-        } catch(e) {}
-      });
-      es.onerror = () => {/* noop */};
-    })();
+    // ===== util =====
+    const $ = (sel, root=document) => root.querySelector(sel);
+    const $$ = (sel, root=document) => Array.from(root.querySelectorAll(sel));
 
-    // ===== 遷移: 仕様どおり /?room=..&seat=.. に統一 =====
-    (function(){
-      document.querySelectorAll('.board-card').forEach(card => {
-        const room = card.getAttribute('data-room');
-        card.querySelectorAll('.seat').forEach(btn => {
-          btn.addEventListener('click', () => {
-            const seat = btn.getAttribute('data-seat');
-            location.href = `/?room=${room}&seat=${seat}`;
-          });
+    // ===== ボードカード生成（Room1..4固定） =====
+    const boardsHost = document.getElementById('boards');
+    function makeCard(room){
+      const wrap = document.createElement('section');
+      wrap.className = 'board-card';
+      wrap.setAttribute('data-room', String(room));
+      wrap.innerHTML = `
+        <h2>Room ${room}</h2>
+        <div class="controls">
+          <button class="seat btn" data-seat="black">Black</button>
+          <button class="seat btn" data-seat="white">White</button>
+          <button class="watch btn" data-seat="observer">Spectator</button>
+        </div>
+        <div class="meta"><span class="watchers">Watching: 0</span></div>
+      `;
+      // クリックで同一オリジンの /?room=..&seat=.. に遷移
+      wrap.querySelectorAll('.seat').forEach(btn=>{
+        btn.addEventListener('click', ()=>{
+          const seat = btn.getAttribute('data-seat');
+          location.href = `/?room=${room}&seat=${seat}`;
         });
-        const watch = card.querySelector('.watch');
-        watch.addEventListener('click', () => {
+      });
+      const wbtn = wrap.querySelector('.watch');
+      if (wbtn) {
+        wbtn.addEventListener('click', ()=>{
           location.href = `/?room=${room}&seat=observer`;
         });
+      }
+      return wrap;
+    }
+    // 初期カード配置
+    boardsHost.innerHTML = '';
+    [1,2,3,4].forEach(n => boardsHost.appendChild(makeCard(n)));
+
+    // ===== デバッグ：全初期化（?admin=1で表示） =====
+    (function(){
+      const showReset = new URL(location.href).searchParams.get('admin') === '1';
+      const btn = document.getElementById('debug-reset');
+      if (showReset) {
+        btn.style.display = 'inline-block';
+        btn.addEventListener('click', async ()=>{
+          try {
+            const res = await fetch('/api/admin', { method:'POST' });
+            if (!res.ok) throw new Error();
+            alert('Reset done.');
+          } catch(e) { alert('Reset error'); }
+        });
+      }
+    })();
+
+    // ===== SSE: ロビーまとめ配信（/?room=all） =====
+    (function(){
+      const es = new EventSource('/?room=all', { withCredentials:false });
+      const note = document.getElementById('lobby-note');
+
+      es.addEventListener('open', ()=>{ note.style.display='none'; });
+
+      es.addEventListener('error', ()=>{
+        note.textContent = 'Reconnecting...';
+        note.style.display = 'block';
+      });
+
+      es.addEventListener('room_state', ev=>{
+        try{
+          const msg = JSON.parse(ev.data);
+          const boards = msg?.state?.boards || [];
+          boards.forEach(b=>{
+            const card = document.querySelector(`.board-card[data-room="${b.room}"]`);
+            if (!card) return;
+            // 座席ボタンの活性/非活性
+            const blackBtn = card.querySelector('.seat[data-seat="black"]');
+            const whiteBtn = card.querySelector('.seat[data-seat="white"]');
+            if (blackBtn) blackBtn.disabled = (b.seats?.black === 'taken');
+            if (whiteBtn) whiteBtn.disabled = (b.seats?.white === 'taken');
+            // 観戦者数
+            const w = card.querySelector('.watchers');
+            if (w) w.textContent = `Watching: ${b.watchers ?? 0}`;
+          });
+        }catch(_){}
       });
     })();
   </script>
