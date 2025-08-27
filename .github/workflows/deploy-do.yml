@@ -1,0 +1,15 @@
+# 1) 展開して入る
+unzip reversi_scaffold.zip -d reversi
+cd reversi
+
+# 2) Git 初期化
+git init
+git branch -M main
+
+# 3) 最初のコミット
+git add .
+git commit -m "Initial scaffold for Reversi (Pages/DO/R2/i18n)"
+
+# 4) GitHub をリモートに設定（自分の repo に置き換え）
+git remote add origin git@github.com:<YOUR_ORG_OR_USER>/<YOUR_REPO>.git
+git push -u origin main
