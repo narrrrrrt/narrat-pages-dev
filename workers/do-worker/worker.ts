@@ -334,3 +334,13 @@ function json(obj: any, status = 200, extraHeaders: Record<string,string> = {}) 
     headers: { "content-type": "application/json; charset=utf-8", ...extraHeaders },
   });
 }
+
+// 末尾に追加（既存の ReversiHub クラスはそのまま）
+// これで "modules" ワーカーとしてビルドされ、DO が有効化されます。
+export default {
+  async fetch(_req: Request): Promise<Response> {
+    return new Response(JSON.stringify({ ok: true, note: "ReversiHub DO" }), {
+      headers: { "content-type": "application/json; charset=utf-8" },
+    });
+  },
+};
