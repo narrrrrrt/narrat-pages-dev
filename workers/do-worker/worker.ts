@@ -9,16 +9,16 @@ type Status = 'waiting'|'playing'|'leave'|'finished';
 
 type Client = {
   controller: ReadableStreamDefaultController;
-  seat: Seat;           // 観戦かどうかの集計に使う
-  room: number;         // 1..4, or 0 for lobby(all)
-  sseId?: string;       // SSE接続ID
+  seat: Seat;
+  room: number;
+  sseId?: string;
 };
 
 type RoomState = {
-  black?: string;       // token
-  white?: string;       // token
-  watchers: number;     // 観戦SSE接続数（プレイヤーは含めない）
-  board: string[];      // 8行, '-', 'B', 'W'
+  black?: string;   // token
+  white?: string;   // token
+  watchers: number;
+  board: string[];  // 8 rows of '-', 'B', 'W'
   turn: Turn;
   status: Status;
 };
@@ -28,23 +28,17 @@ type TokenInfo = { room: number, seat: Exclude<Seat,'observer'>, sseId?: string 
 function initialBoard(): string[] {
   const rows = Array.from({length:8}, _ => '--------');
   const set = (x:number,y:number,ch:string) => {
-    const row = rows[y].split('');
-    row[x] = ch;
-    rows[y] = row.join('');
+    const row = rows[y].split(''); row[x] = ch; rows[y] = row.join('');
   };
-  set(3,3,'W'); set(4,4,'W');
-  set(3,4,'B'); set(4,3,'B');
+  set(3,3,'W'); set(4,4,'W'); set(3,4,'B'); set(4,3,'B');
   return rows;
 }
-
 function cloneBoard(b:string[]): string[] { return b.slice(); }
-
 function posToXY(pos:string): [number,number] {
-  const col = pos[0].toLowerCase().charCodeAt(0) - 97; // a..h -> 0..7
-  const row = parseInt(pos.slice(1),10) - 1; // 1..8 -> 0..7
+  const col = pos[0].toLowerCase().charCodeAt(0) - 97;
+  const row = parseInt(pos.slice(1),10) - 1;
   return [col,row];
 }
-
 const DIRS = [[1,0],[-1,0],[0,1],[0,-1],[1,1],[1,-1],[-1,1],[-1,-1]];
 
 function legalMoves(board:string[], turn:Exclude<Turn,null>): string[] {
@@ -88,17 +82,9 @@ function applyMove(board:string[], pos:string, turn:Exclude<Turn,null>): string[
       break;
     }
   }
-  if (flipped===0) return board; // 非合法（保険）
+  if (flipped===0) return board; // 非合法の保険
   rows[y][x] = me;
   return rows.map(a=>a.join(''));
-}
-
-function countBW(board:string[]): {B:number,W:number} {
-  let B=0,W=0;
-  for (const row of board){
-    for (const ch of row){ if (ch==='B') B++; else if (ch==='W') W++; }
-  }
-  return {B,W};
 }
 
 export class ReversiHub {
@@ -107,21 +93,18 @@ export class ReversiHub {
   lobbyClients: Set<Client>;
   roomClients: Map<number, Set<Client>>;
   tokenMap: Map<string,TokenInfo>;
-  sseMap: Map<string, TokenInfo>; // sseId → TokenInfo（JOINで登録）
+  sseMap: Map<string, TokenInfo>;
 
   constructor(state: DurableObjectState, env: Env){
     this.state = state;
     this.rooms = new Map();
-    for (const n of [1,2,3,4]) {
-      this.rooms.set(n, { watchers:0, board: initialBoard(), turn: null, status:'waiting' });
-    }
+    for (const n of [1,2,3,4]) this.rooms.set(n, { watchers:0, board: initialBoard(), turn:null, status:'waiting' });
     this.lobbyClients = new Set();
     this.roomClients = new Map([[1,new Set],[2,new Set],[3,new Set],[4,new Set]]);
     this.tokenMap = new Map();
     this.sseMap   = new Map();
   }
 
-  // 便利：スナップショット生成
   snapshot(room: number, seat?: Seat){
     const r = this.rooms.get(room)!;
     const legal = r.turn ? legalMoves(r.board, r.turn) : [];
@@ -137,7 +120,7 @@ export class ReversiHub {
     };
   }
   snapshotAll(){
-    const pack = {};
+    const pack: any = {};
     for (const n of [1,2,3,4]) {
       const r = this.rooms.get(n)!;
       pack[n] = { seats: { black: !!r.black, white: !!r.white }, watchers: r.watchers, status: r.status };
@@ -158,8 +141,6 @@ export class ReversiHub {
       try { c.controller.enqueue(encoder(`event: room_state\ndata: ${snap}\n\n`)); } catch {}
     }
   }
-
-  // ping（切断検知の補助）
   startPinger(set: Set<Client>){
     const timer = setInterval(()=>{
       for (const c of set){
@@ -167,14 +148,12 @@ export class ReversiHub {
       }
     }, 3000);
     this.state.waitUntil(new Promise<void>(resolve=>{
-      // 全クライアントが空になったら止める（軽量実装）
       const iv = setInterval(()=>{
         if (set.size===0){ clearInterval(iv); clearInterval(timer); resolve(); }
       }, 5000);
     }));
   }
 
-  // ===== Handlers =====
   async fetch(req: Request): Promise<Response> {
     const url = new URL(req.url);
 
@@ -211,16 +190,10 @@ export class ReversiHub {
       start: (controller) => {
         const client: Client = { controller, seat: 'observer', room: 0 };
         this.lobbyClients.add(client);
-        // 初回状態
         controller.enqueue(encoder('event: room_state\ndata: ' + JSON.stringify(this.snapshotAll()) + '\n\n'));
-        // ping
         if (this.lobbyClients.size === 1) this.startPinger(this.lobbyClients);
-      },
-      cancel: () => { /* GCは自動で十分 */ }
+      }
     });
-    // close時
-    stream.cancel = () => { /* noop */ };
-
     return new Response(stream, sseHeaders());
   }
 
@@ -234,33 +207,27 @@ export class ReversiHub {
         if (seat === 'observer') {
           const r = this.rooms.get(room)!; r.watchers++; this.broadcastLobby();
         }
-        // 初回スナップショット（seat を含める）
         controller.enqueue(encoder('event: room_state\ndata: ' + JSON.stringify(this.snapshot(room, seat)) + '\n\n'));
         if (clients.size === 1) this.startPinger(clients);
-      },
-      cancel: () => { /* noop */ }
+      }
     });
 
-    // onclose: 観戦SSE数を減算、JOIN ひも付けがあれば自動 leave
     const originalCancel = stream.cancel?.bind(stream);
     stream.cancel = async (reason?: any) => {
       try{
-        const r = this.rooms.get(room)!;
-        if (this.roomClients.get(room)!.size > 0) {
-          // remove client
-          for (const c of Array.from(this.roomClients.get(room)!)) {
-            if (c.seat===seat && c.sseId===sseId) { this.roomClients.get(room)!.delete(c); break; }
-          }
+        // remove client
+        for (const c of Array.from(this.roomClients.get(room)!)) {
+          if (c.seat===seat && c.sseId===sseId) { this.roomClients.get(room)!.delete(c); break; }
         }
+        const r = this.rooms.get(room)!;
         if (seat === 'observer') {
           r.watchers = Math.max(0, (r.watchers||0) - 1);
           this.broadcastLobby();
           this.broadcastRoom(room);
         } else if (sseId) {
-          // SSE切断によりプレイヤーを退室扱い（トークン不要）
           const info = this.findBySseId(sseId);
           if (info && info.room === room) {
-            this.leaveByTokenInfo(info);
+            this.leaveByTokenInfo(info); // 自動退出 → ログは leaveByTokenInfo 内で出る
           }
         }
       }catch(_){}
@@ -289,11 +256,9 @@ export class ReversiHub {
           token = genToken();
           if (wantSeat === 'black') r.black = token; else r.white = token;
           this.tokenMap.set(token, { room, seat: wantSeat, sseId });
-          if (sseId) this.sseMap.set(sseId, { room, seat: wantSeat }); // 紐付け（トークン不要で特定可）
-          // 対局開始判定
-          if (r.black && r.white) { r.status = 'playing'; r.turn = 'black'; }
+          if (sseId) this.sseMap.set(sseId, { room, seat: wantSeat });
+          if (r.black && r.white && r.status!=='playing') { r.status = 'playing'; r.turn = 'black'; }
         } else {
-          // 埋まっていたので観戦にフォールバック
           seat = 'observer';
         }
       } else {
@@ -303,10 +268,8 @@ export class ReversiHub {
       const hdrs = new Headers({'Content-Type':'application/json'});
       if (token) hdrs.set('X-Play-Token', token);
 
-      // ロビー＆部屋に即反映
       this.broadcastLobby();
       this.broadcastRoom(room);
-
       return new Response(JSON.stringify(this.snapshot(room, seat)), { status:200, headers: hdrs });
     }
 
@@ -315,13 +278,12 @@ export class ReversiHub {
       if (token) {
         const info = this.tokenMap.get(token);
         if (info) { this.leaveByTokenInfo(info); }
-        const hdrs = new Headers({'Content-Type':'application/json','X-Log-Event':'token-deleted'});
+        const hdrs = new Headers({'Content-Type':'application/json'});
         return new Response(JSON.stringify(this.snapshot(room)), { status:200, headers: hdrs });
       } else if (sseId && this.sseMap.has(sseId)) {
-        // トークン無し（sendBeacon保険）。sseIdからプレイヤー特定。
         const info = this.sseMap.get(sseId)!;
         this.leaveByTokenInfo(info);
-        const hdrs = new Headers({'Content-Type':'application/json','X-Log-Event':'token-deleted'});
+        const hdrs = new Headers({'Content-Type':'application/json'});
         return new Response(JSON.stringify(this.snapshot(info.room)), { status:200, headers: hdrs });
       } else {
         return json({ ok:true });
@@ -333,13 +295,15 @@ export class ReversiHub {
 
   leaveByTokenInfo(info: TokenInfo){
     const r = this.rooms.get(info.room)!;
+    // ★ 退出ログ（席ごとに個別、トークン込み）
+    const tok = info.seat==='black' ? r.black : r.white;
+    console.log('[LEAVE]', { room: info.room, seat: info.seat, token: tok });
+
     if (info.seat === 'black' && r.black) { this.tokenMap.delete(r.black); r.black = undefined; }
     if (info.seat === 'white' && r.white) { this.tokenMap.delete(r.white); r.white = undefined; }
-    // 対局リセット（設計：「プレイヤー退出 → ポップアップ → 盤面ゼロ → leave → waiting」を簡易化）
     r.board = initialBoard(); r.turn = null; r.status = 'waiting';
-    // 紐付け破棄
+
     for (const [k,v] of Array.from(this.sseMap.entries())) if (v.room===info.room && v.seat===info.seat) this.sseMap.delete(k);
-    // 反映
     this.broadcastLobby();
     this.broadcastRoom(info.room);
   }
@@ -367,8 +331,11 @@ export class ReversiHub {
     const legals = legalMoves(r.board, r.turn);
     if (!legals.includes(pos)) return json(this.snapshot(room), 200);
 
-    // 反転
+    // 反転（合法手確定後）
     r.board = applyMove(r.board, pos, r.turn);
+
+    // ★ 打ったログ（席ごと、トークン込み）
+    console.log('[MOVE]', { room, seat: info.seat, pos, token });
 
     // 手番移行とパス/終局
     const next: Exclude<Turn,null> = r.turn === 'black' ? 'white' : 'black';
@@ -378,22 +345,16 @@ export class ReversiHub {
     } else {
       const curLegal = legalMoves(r.board, r.turn);
       if (curLegal.length > 0) {
-        // 相手パス：手番維持
-        r.turn = r.turn;
+        r.turn = r.turn; // 相手パス
       } else {
-        // 双方パス → 終局
         r.turn = null; r.status = 'finished';
       }
     }
 
-    // 反映（初手ログヘッダ）
-    const hdrs = new Headers({'Content-Type':'application/json'});
-    if (pos && (r.board.join('').match(/B|W/g)||[]).length <= 5) hdrs.set('X-Log-Event','first-move');
-
     const snap = this.snapshot(room);
     this.broadcastRoom(room);
     this.broadcastLobby();
-    return new Response(JSON.stringify(snap), { status:200, headers: hdrs });
+    return new Response(JSON.stringify(snap), { status:200, headers: {'Content-Type':'application/json'} });
   }
 }
 
@@ -412,7 +373,7 @@ function encoder(s: string){ return new TextEncoder().encode(s); }
 function json(data:any, code=200){ return new Response(JSON.stringify(data), { status: code, headers:{'Content-Type':'application/json'} }); }
 function genToken(): string { return Math.random().toString(36).slice(2,10); }
 
-// default export（設計書の注意事項どおり）
+// default export（注意事項どおり）
 export default {
   async fetch(request: Request, env: Env) {
     const id = env.REVERSI_HUB.idFromName('global');
