@@ -5,12 +5,28 @@
   <meta name="viewport" content="width=device-width,initial-scale=1" />
   <title>Reversi</title>
   <link rel="stylesheet" href="/reverse.css" />
+  <!-- 既存CSSに依存せず確実に見えるよう、最低限のオーバーライドを追加 -->
   <style>
-    header { display:flex; align-items:center; justify-content:space-between;
-      padding:12px 16px; font-weight:600; }
+    header { display:flex; align-items:center; justify-content:space-between; padding:12px 16px; font-weight:600; }
     header .meta { font-weight:400; font-size:14px; opacity:.9 }
     #board { width:min(92vw,560px); margin:24px auto; }
     #toLobby { margin-left:16px; font-size:14px; }
+    /* 汎用描画（既存reverse.cssが無効でも見えるように） */
+    .row { display:flex; }
+    .cell {
+      position:relative; width:48px; height:48px; margin:2px; border-radius:8px; border:1px solid #0b0b0b;
+      background:#2c7a2c; outline:none; cursor:pointer;
+    }
+    .cell[data-stone="white"]::after, .cell[data-stone="black"]::after {
+      content:""; position:absolute; inset:20%; border-radius:50%;
+      box-shadow: inset 0 0 4px rgba(0,0,0,.6);
+    }
+    .cell[data-stone="white"]::after { background:#eee; }
+    .cell[data-stone="black"]::after { background:#111; }
+    .cell[data-legal="1"]::before {
+      content:""; position:absolute; inset:40%; border-radius:50%;
+      border:2px solid #eee; box-shadow:0 0 0 1px #000;
+    }
   </style>
 </head>
 <body>
@@ -33,7 +49,6 @@
 
     const metaEl = document.getElementById('meta');
     const boardEl = document.getElementById('board');
-    const lobbyBtn = document.getElementById('toLobby');
 
     let playToken = sessionStorage.getItem('X-Play-Token') || '';
     let mySeat = 'observer';
@@ -41,7 +56,15 @@
 
     const SIZE = 8;
 
+    function mapStoneCharToName(ch){
+      // CSS互換のため 'W'|'B' を 'white'|'black' に変換（'-' は空）
+      if (ch === 'W') return 'white';
+      if (ch === 'B') return 'black';
+      return '';
+    }
+
     function renderBoard(snap){
+      // 初回グリッド
       if (!boardEl.dataset.wired) {
         boardEl.innerHTML = '';
         for (let y=0; y<SIZE; y++){
@@ -57,17 +80,20 @@
         }
         boardEl.dataset.wired = '1';
       }
-      const stones = snap.board.stones;
-      const legal = new Set((snap.legal||[]).map(s=>s.toLowerCase()));
+      // 石＆合法手
+      const stones = snap.board.stones;               // ["--------", ...]
+      const legalSet = new Set((snap.legal||[]).map(s=>s.toLowerCase()));
       const xyToPos = (x,y)=> String.fromCharCode(97+x) + (y+1);
 
       for (let y=0; y<SIZE; y++){
         for (let x=0; x<SIZE; x++){
           const cell = boardEl.children[y].children[x];
-          const ch = stones[y][x]; // '-', 'W', 'B'
-          cell.setAttribute('data-stone', ch);
+          const ch = stones[y][x];                    // '-', 'W', 'B'
+          const name = mapStoneCharToName(ch);        // '', 'white', 'black'
+          if (name) cell.setAttribute('data-stone', name); else cell.removeAttribute('data-stone');
+
           const pos = xyToPos(x,y);
-          const canPlay = legal.has(pos) && (mySeat === snap.turn);
+          const canPlay = legalSet.has(pos) && (mySeat === snap.turn);
           cell.setAttribute('data-legal', canPlay ? '1':'0');
         }
       }
@@ -80,7 +106,7 @@
       const stat  = `Status: ${snap.status || 'waiting'}`;
       const watch = `Watching: ${snap.watchers ?? 0}`;
       const mine  = `You: ${mySeat}`;
-      metaEl.textContent = [seats, turn, stat, watch, mine].join('   ');
+      document.getElementById('meta').textContent = [seats, turn, stat, watch, mine].join('   ');
     }
 
     async function join(){
@@ -126,17 +152,17 @@
       renderBoard(snapshot);
     }
 
+    // SSE: /sse に固定（Functionsの静的配信に干渉しない）
     let es = null;
     function openSSE(){
       if (es) es.close();
-      // ★ ここを /sse に変更（Pages Functions のルーティングに関与しない）
       const url = `/sse?room=${room}&seat=${mySeat}&sse=${encodeURIComponent(sseId)}`;
       es = new EventSource(url);
       es.addEventListener('room_state', (ev) => {
         try{
           const snap = JSON.parse(ev.data);
           snapshot = snap;
-          if (snap.seat && snap.seat !== mySeat) mySeat = snap.seat;
+          if (snap.seat && snap.seat !== mySeat) mySeat = snap.seat; // 観戦fallback等
           renderBoard(snapshot);
         }catch(_){}
       });

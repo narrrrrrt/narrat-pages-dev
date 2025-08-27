@@ -6,28 +6,54 @@
   <title>Reversi Lobby</title>
   <link rel="stylesheet" href="/style.css" />
   <style>
-    body { max-width: 960px; margin: 0 auto; padding: 16px; }
+    body { max-width: 980px; margin: 0 auto; padding: 16px; }
     h1 { margin: 8px 0 16px; }
     .grid { display:grid; grid-template-columns: repeat(2,1fr); gap:16px; }
-    .card { border: 1px solid #333; border-radius: 10px; padding: 16px; background: #111; }
-    .btn { display:inline-block; padding:6px 10px; margin-right:8px; border-radius:8px; border:1px solid #555; text-decoration:none; }
-    .btn[aria-disabled="true"] { opacity: .4; pointer-events: none; }
-    .muted { opacity:.8; font-size:14px; }
+    .card { border: 1px solid #333; border-radius: 12px; padding: 16px; background: #111; }
+    .row { margin-top: 8px; }
+    .btn {
+      display:inline-block; padding:8px 12px; margin:0 8px 8px 0;
+      border-radius:10px; border:1px solid #6bf; color:#6bf; text-decoration:none; background:#161a20;
+    }
+    .btn:hover { filter: brightness(1.2); }
+    .btn[aria-disabled="true"] { opacity:.35; pointer-events:none; }
+    .muted { opacity:.85; font-size:14px; }
+    /* admin */
+    .admin { margin: 12px 0 20px; padding: 12px; border:1px dashed #555; border-radius:10px; background:#0d0f12; }
+    .admin .btn-danger { border-color:#f66; color:#f66; }
   </style>
 </head>
 <body>
   <h1>Reversi Lobby</h1>
+
+  <div id="admin" class="admin" style="display:none">
+    <strong>Admin</strong><br/>
+    <button id="btnInit" class="btn btn-danger">Initialize database (reset rooms)</button>
+    <span id="adminMsg" class="muted" style="margin-left:8px;"></span>
+  </div>
+
   <div class="grid" id="rooms"></div>
 
   <script>
   (function(){
+    const qs = new URLSearchParams(location.search);
+    const showAdmin = qs.get('admin') === '1';
+    const adminBox = document.getElementById('admin');
+    if (showAdmin) {
+      adminBox.style.display = '';
+      document.getElementById('btnInit').onclick = async () => {
+        const r = await fetch('/api/admin', { method:'POST' });
+        document.getElementById('adminMsg').textContent = r.ok ? 'Done.' : 'Failed.';
+      };
+    }
+
     const roomsEl = document.getElementById('rooms');
     function card(n, seats, watchers){
       const s = seats || {black:false, white:false};
       return `
         <div class="card" id="room-${n}">
           <h3>Room ${n}</h3>
-          <div>
+          <div class="row">
             <a class="btn" href="/reverse.html?room=${n}&seat=black"  aria-disabled="${s.black}">Black</a>
             <a class="btn" href="/reverse.html?room=${n}&seat=white"  aria-disabled="${s.white}">White</a>
             <a class="btn" href="/reverse.html?room=${n}&seat=observer">Spectator</a>
