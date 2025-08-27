@@ -5,28 +5,19 @@
   <meta name="viewport" content="width=device-width,initial-scale=1" />
   <title>Reversi</title>
   <link rel="stylesheet" href="/reverse.css" />
-  <!-- 既存CSSに依存せず確実に見えるよう、最低限のオーバーライドを追加 -->
   <style>
     header { display:flex; align-items:center; justify-content:space-between; padding:12px 16px; font-weight:600; }
     header .meta { font-weight:400; font-size:14px; opacity:.9 }
     #board { width:min(92vw,560px); margin:24px auto; }
     #toLobby { margin-left:16px; font-size:14px; }
-    /* 汎用描画（既存reverse.cssが無効でも見えるように） */
     .row { display:flex; }
-    .cell {
-      position:relative; width:48px; height:48px; margin:2px; border-radius:8px; border:1px solid #0b0b0b;
-      background:#2c7a2c; outline:none; cursor:pointer;
-    }
-    .cell[data-stone="white"]::after, .cell[data-stone="black"]::after {
-      content:""; position:absolute; inset:20%; border-radius:50%;
-      box-shadow: inset 0 0 4px rgba(0,0,0,.6);
-    }
+    .cell { position:relative; width:48px; height:48px; margin:2px; border-radius:8px; border:1px solid #0b0b0b; background:#2c7a2c; outline:none; cursor:pointer; }
+    .cell[data-stone="white"]::after, .cell[data-stone="black"]::after { content:""; position:absolute; inset:20%; border-radius:50%; box-shadow: inset 0 0 4px rgba(0,0,0,.6); }
     .cell[data-stone="white"]::after { background:#eee; }
     .cell[data-stone="black"]::after { background:#111; }
-    .cell[data-legal="1"]::before {
-      content:""; position:absolute; inset:40%; border-radius:50%;
-      border:2px solid #eee; box-shadow:0 0 0 1px #000;
-    }
+    .cell[data-legal="1"]::before { content:""; position:absolute; inset:40%; border-radius:50%; border:2px solid #eee; box-shadow:0 0 0 1px #000; }
+    .debug { max-width:min(92vw,560px); margin: 8px auto 24px; padding: 10px 12px; border:1px solid #e2e8f0; border-radius:10px; background:#fbfdff; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; color:#223; font-size:12px; }
+    .debug pre { white-space: pre-wrap; word-break: break-word; margin:6px 0 0; line-height:1.35; }
   </style>
 </head>
 <body>
@@ -36,9 +27,15 @@
   </header>
 
   <main><div id="board"></div></main>
-  <nav style="text-align:center;margin:8px 0 24px;">
+  <nav style="text-align:center;margin:8px 0 8px;">
     <a href="#" id="toLobby">Lobby</a>
   </nav>
+
+  <div class="debug" id="debugBox">
+    <div><strong>Debug (room stream)</strong> -- source: <code id="dbgSrc">/?room=?</code></div>
+    <div id="dbgMeta">–</div>
+    <pre id="dbgJson">–</pre>
+  </div>
 
   <script>
   (() => {
@@ -49,22 +46,20 @@
 
     const metaEl = document.getElementById('meta');
     const boardEl = document.getElementById('board');
+    const dbgSrc = document.getElementById('dbgSrc');
+    const dbgMeta = document.getElementById('dbgMeta');
+    const dbgJson = document.getElementById('dbgJson');
 
     let playToken = sessionStorage.getItem('X-Play-Token') || '';
     let mySeat = 'observer';
     let snapshot = null;
+    let eventCount = 0;
 
     const SIZE = 8;
 
-    function mapStoneCharToName(ch){
-      // CSS互換のため 'W'|'B' を 'white'|'black' に変換（'-' は空）
-      if (ch === 'W') return 'white';
-      if (ch === 'B') return 'black';
-      return '';
-    }
+    function mapStoneCharToName(ch){ if (ch === 'W') return 'white'; if (ch === 'B') return 'black'; return ''; }
 
     function renderBoard(snap){
-      // 初回グリッド
       if (!boardEl.dataset.wired) {
         boardEl.innerHTML = '';
         for (let y=0; y<SIZE; y++){
@@ -80,16 +75,15 @@
         }
         boardEl.dataset.wired = '1';
       }
-      // 石＆合法手
-      const stones = snap.board.stones;               // ["--------", ...]
+      const stones = snap.board.stones;
       const legalSet = new Set((snap.legal||[]).map(s=>s.toLowerCase()));
       const xyToPos = (x,y)=> String.fromCharCode(97+x) + (y+1);
 
       for (let y=0; y<SIZE; y++){
         for (let x=0; x<SIZE; x++){
           const cell = boardEl.children[y].children[x];
-          const ch = stones[y][x];                    // '-', 'W', 'B'
-          const name = mapStoneCharToName(ch);        // '', 'white', 'black'
+          const ch = stones[y][x];
+          const name = mapStoneCharToName(ch);
           if (name) cell.setAttribute('data-stone', name); else cell.removeAttribute('data-stone');
 
           const pos = xyToPos(x,y);
@@ -106,7 +100,14 @@
       const stat  = `Status: ${snap.status || 'waiting'}`;
       const watch = `Watching: ${snap.watchers ?? 0}`;
       const mine  = `You: ${mySeat}`;
-      document.getElementById('meta').textContent = [seats, turn, stat, watch, mine].join('   ');
+      metaEl.textContent = [seats, turn, stat, watch, mine].join('   ');
+    }
+
+    function updateDebug(snap, note=''){
+      eventCount++;
+      dbgMeta.textContent = `events=${eventCount}  note=${note}  ts=${new Date().toLocaleTimeString()}  seat=${mySeat}  turn=${snap.turn}`;
+      dbgJson.textContent = JSON.stringify(snap, null, 2);
+      console.debug('[room_state]', {eventCount, mySeat, snap});
     }
 
     async function join(){
@@ -120,6 +121,7 @@
       snapshot = await res.json();
       mySeat = snapshot.seat || snapshot.mySeat || wantSeat;
       renderBoard(snapshot);
+      updateDebug(snapshot, 'after join');
     }
 
     async function leave(){
@@ -150,13 +152,15 @@
       const snap = await res.json();
       snapshot = snap;
       renderBoard(snapshot);
+      updateDebug(snapshot, `played ${pos}`);
     }
 
-    // SSE: /sse に固定（Functionsの静的配信に干渉しない）
+    // ★ ルームSSEを /?room=... に戻す
     let es = null;
     function openSSE(){
       if (es) es.close();
-      const url = `/sse?room=${room}&seat=${mySeat}&sse=${encodeURIComponent(sseId)}`;
+      const url = `/?room=${room}&seat=${mySeat}&sse=${encodeURIComponent(sseId)}`;
+      dbgSrc.textContent = url;
       es = new EventSource(url);
       es.addEventListener('room_state', (ev) => {
         try{
@@ -164,8 +168,10 @@
           snapshot = snap;
           if (snap.seat && snap.seat !== mySeat) mySeat = snap.seat; // 観戦fallback等
           renderBoard(snapshot);
-        }catch(_){}
+          updateDebug(snapshot, 'stream');
+        }catch(err){ console.warn('bad event', err); }
       });
+      es.onerror = () => { updateDebug(snapshot || {status:'unknown'}, 'sse error'); };
     }
 
     document.getElementById('toLobby').addEventListener('click', async (e) => {
