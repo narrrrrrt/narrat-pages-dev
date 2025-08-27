@@ -1,0 +1,107 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Reversi Room</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <link rel="stylesheet" href="/reverse.css">
+</head>
+<body>
+  <header>
+    <h1>Reversi</h1>
+    <div id="indicators">
+      <span id="turn">-</span>
+      <span id="status">waiting</span>
+      <span id="watchers">Watching: 0</span>
+    </div>
+  </header>
+
+  <main>
+    <div id="board" class="board"></div>
+  </main>
+
+  <script>
+  // parse query
+  const params = new URLSearchParams(location.search);
+  const room = params.get("room");
+  const seat = params.get("seat") || "observer";
+
+  // join on load (no cookies; token via response header)
+  let playToken = sessionStorage.getItem("ptok") || "";
+  (async function joinOnce(){
+    try {
+      const res = await fetch("/api/action", {
+        method: "POST",
+        headers: { "content-type": "application/json", "X-Play-Token": playToken || "" },
+        body: JSON.stringify({ action: "join", room: Number(room), seat })
+      });
+      const tok = res.headers.get("X-Play-Token");
+      if (tok) {
+        playToken = tok;
+        sessionStorage.setItem("ptok", tok);
+      }
+      const snap = await res.json().catch(()=>null);
+      if (snap) applySnapshot(snap);
+    } catch(e){}
+  })();
+
+  // before unload: leave
+  addEventListener("beforeunload", () => {
+    if (!room) return;
+    navigator.sendBeacon("/api/action", new Blob([JSON.stringify({ action:"leave", room: Number(room), seat })], {type:"application/json"}));
+  });
+
+
+  // draw empty board
+  const boardEl = document.getElementById("board");
+  for (let y=0; y<8; y++){
+    for (let x=0; x<8; x++){
+      const cell = document.createElement("button");
+      cell.className = "cell";
+      cell.dataset.pos = String.fromCharCode(97+x) + (y+1);
+      cell.addEventListener("click", () => {
+        if (seat === "observer") return;
+        fetch("/api/move", {
+          method: "POST",
+          headers: { "content-type": "application/json", "X-Play-Token": playToken || "" },
+          body: JSON.stringify({ room: Number(room), seat, pos: cell.dataset.pos })
+        }).then(r => r.json()).then(snap => {
+          // apply snapshot (very naive)
+          applySnapshot(snap);
+        }).catch(()=>{});
+      });
+      boardEl.appendChild(cell);
+    }
+  }
+
+  function applySnapshot(snap){
+    if (!snap || !snap.board) return;
+    document.getElementById("turn").textContent = snap.turn ?? "-";
+    document.getElementById("status").textContent = snap.status ?? "waiting";
+    document.getElementById("watchers").textContent = "Watching: " + (snap.watchers ?? 0);
+    // update tiles from stones array
+    if (Array.isArray(snap.board.stones)){
+      for (let y=0; y<8; y++){
+        for (let x=0; x<8; x++){
+          const pos = String.fromCharCode(97+x) + (y+1);
+          const cell = document.querySelector('.cell[data-pos="'+pos+'"]');
+          const ch = (snap.board.stones[y] || "-".repeat(8))[x] || "-";
+          cell.textContent = ch === "B" ? "●" : (ch === "W" ? "○" : "");
+        }
+      }
+    }
+  }
+
+  // SSE
+  (function(){
+    const sseUrl = new URL(location.origin + "/");
+    sseUrl.searchParams.set("room", room);
+    sseUrl.searchParams.set("seat", seat);
+    const es = new EventSource(sseUrl);
+    es.addEventListener("room_state", (ev)=>{
+      try { applySnapshot(JSON.parse(ev.data)); } catch(e){}
+    });
+  })();
+  </script>
+</body>
+</html>

@@ -1,0 +1,80 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Reversi Lobby</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <link rel="stylesheet" href="/style.css">
+</head>
+<body>
+  <header>
+    <h1>Reversi Lobby</h1>
+  </header>
+
+  <main id="lobby">
+    <section class="boards">
+      <div class="board-card" data-room="1">
+        <h2>Room 1</h2>
+        <div class="seats">
+          <button class="seat" data-seat="black" disabled>Black</button>
+          <button class="seat" data-seat="white" disabled>White</button>
+          <button class="watch">Spectator</button>
+        </div>
+        <div class="meta"><span class="watchers">Watching: 0</span></div>
+      </div>
+      <div class="board-card" data-room="2">
+        <h2>Room 2</h2>
+        <div class="seats">
+          <button class="seat" data-seat="black" disabled>Black</button>
+          <button class="seat" data-seat="white" disabled>White</button>
+          <button class="watch">Spectator</button>
+        </div>
+        <div class="meta"><span class="watchers">Watching: 0</span></div>
+      </div>
+      <div class="board-card" data-room="3">
+        <h2>Room 3</h2>
+        <div class="seats">
+          <button class="seat" data-seat="black" disabled>Black</button>
+          <button class="seat" data-seat="white" disabled>White</button>
+          <button class="watch">Spectator</button>
+        </div>
+        <div class="meta"><span class="watchers">Watching: 0</span></div>
+      </div>
+      <div class="board-card" data-room="4">
+        <h2>Room 4</h2>
+        <div class="seats">
+          <button class="seat" data-seat="black" disabled>Black</button>
+          <button class="seat" data-seat="white" disabled>White</button>
+          <button class="watch">Spectator</button>
+        </div>
+        <div class="meta"><span class="watchers">Watching: 0</span></div>
+      </div>
+    </section>
+  </main>
+
+  <script>
+  // Minimal SSE for lobby (room=all). Real logic will be implemented server-side.
+  (function(){
+    const url = new URL(location.href);
+    const sseUrl = new URL(location.origin + "/");
+    sseUrl.searchParams.set("room", "all");
+    const es = new EventSource(sseUrl, { withCredentials: false });
+    es.addEventListener("room_state", (ev) => {
+      try {
+        const data = JSON.parse(ev.data);
+        if (!data || !data.state || !data.state.boards) return;
+        for (const b of data.state.boards) {
+          const card = document.querySelector('.board-card[data-room="'+b.room+'"]');
+          if (!card) continue;
+          const seats = card.querySelectorAll('.seat');
+          seats[0].disabled = (b.seats?.black === "taken");
+          seats[1].disabled = (b.seats?.white === "taken");
+          card.querySelector('.watchers').textContent = "Watching: " + (b.watchers ?? 0);
+        }
+      } catch(e) {}
+    });
+    es.onerror = () => { /* ignore */ };
+  })();
+  </script>
+</body>
+</html>

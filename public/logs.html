@@ -1,0 +1,41 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Logs</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <style>
+    body{font-family:system-ui, -apple-system, Segoe UI, Roboto, sans-serif; padding:2rem;}
+    header{display:flex;align-items:center;gap:1rem;margin-bottom:1rem;}
+    table{border-collapse:collapse;width:100%;}
+    th,td{border:1px solid #ddd;padding:8px;font-size:12px;}
+    th{background:#f6f6f6;text-align:left;}
+    .controls{display:flex;gap:.5rem;align-items:center;margin-bottom:1rem;}
+  </style>
+</head>
+<body>
+  <header><h1>R2 Logs</h1></header>
+  <div class="controls">
+    <label>Range:
+      <select id="range">
+        <option value="30m">Last 30 min</option>
+        <option value="1h">Last 1 hour</option>
+        <option value="6h">Last 6 hours</option>
+        <option value="24h">Last 24 hours</option>
+      </select>
+    </label>
+    <label><input type="checkbox" id="rdns"> rDNS</label>
+    <button id="run">Run</button>
+  </div>
+  <table>
+    <thead><tr><th>URL</th><th>Code</th><th>Source IP</th><th>User-Agent</th></tr></thead>
+    <tbody id="rows"></tbody>
+  </table>
+  <script>
+    document.getElementById("run").addEventListener("click", ()=>{
+      // Placeholder; actual backend API left to implementation
+      alert("logs query backend is to be implemented.");
+    });
+  </script>
+</body>
+</html>

@@ -1,0 +1,26 @@
+{
+  "vacant": {
+    "en": "Vacant",
+    "de": "Frei",
+    "es": "Vacante",
+    "fr": "Libre",
+    "it": "Libero",
+    "ja": "空き"
+  },
+  "opponent_left": {
+    "en": "Your opponent has left the game.",
+    "de": "Ihr Gegner hat das Spiel verlassen.",
+    "es": "Tu oponente ha abandonado el juego.",
+    "fr": "Votre adversaire a quitté la partie.",
+    "it": "Il tuo avversario ha lasciato la partita.",
+    "ja": "対戦相手が退室しました。"
+  },
+  "spectator": {
+    "en": "Spectator",
+    "de": "Zuschauer",
+    "es": "Espectador",
+    "fr": "Spectateur",
+    "it": "Spettatore",
+    "ja": "観戦"
+  }
+}
