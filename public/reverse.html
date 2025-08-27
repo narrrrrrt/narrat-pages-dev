@@ -6,11 +6,8 @@
   <title>Reversi</title>
   <link rel="stylesheet" href="/reverse.css" />
   <style>
-    /* 既存CSSを尊重。最低限の補助だけ */
-    header {
-      display:flex; align-items:center; justify-content:space-between;
-      padding:12px 16px; font-weight:600;
-    }
+    header { display:flex; align-items:center; justify-content:space-between;
+      padding:12px 16px; font-weight:600; }
     header .meta { font-weight:400; font-size:14px; opacity:.9 }
     #board { width:min(92vw,560px); margin:24px auto; }
     #toLobby { margin-left:16px; font-size:14px; }
@@ -22,37 +19,29 @@
     <div class="meta" id="meta">–</div>
   </header>
 
-  <main>
-    <div id="board"></div>
-  </main>
-
+  <main><div id="board"></div></main>
   <nav style="text-align:center;margin:8px 0 24px;">
     <a href="#" id="toLobby">Lobby</a>
   </nav>
 
   <script>
   (() => {
-    // ======= URL 解析 =======
     const params = new URLSearchParams(location.search);
     const room = parseInt(params.get('room') || '1', 10);
-    const wantSeat = (params.get('seat') || 'observer').toLowerCase(); // black | white | observer
-    // 短命セッションID（SSEとjoinをひも付ける。※トークンとは別物）
+    const wantSeat = (params.get('seat') || 'observer').toLowerCase();
     const sseId = (crypto && crypto.randomUUID ? crypto.randomUUID() : Math.random().toString(36).slice(2));
 
-    // ======= DOM =======
     const metaEl = document.getElementById('meta');
     const boardEl = document.getElementById('board');
     const lobbyBtn = document.getElementById('toLobby');
 
-    // ======= 状態 =======
-    let playToken = sessionStorage.getItem('X-Play-Token') || ''; // JOIN時に更新
-    let mySeat = 'observer'; // 実際の着席結果（サーバ判定で観戦fallbackあり）
+    let playToken = sessionStorage.getItem('X-Play-Token') || '';
+    let mySeat = 'observer';
     let snapshot = null;
 
-    // ======= ボード描画 =======
     const SIZE = 8;
+
     function renderBoard(snap){
-      // 初回時はグリッド生成
       if (!boardEl.dataset.wired) {
         boardEl.innerHTML = '';
         for (let y=0; y<SIZE; y++){
@@ -60,8 +49,7 @@
           row.className = 'row';
           for (let x=0; x<SIZE; x++){
             const cell = document.createElement('button');
-            cell.className = 'cell';
-            cell.dataset.x = x; cell.dataset.y = y;
+            cell.className = 'cell'; cell.dataset.x = x; cell.dataset.y = y;
             cell.addEventListener('click', onCellClick);
             row.appendChild(cell);
           }
@@ -69,18 +57,18 @@
         }
         boardEl.dataset.wired = '1';
       }
-      // 石と合法手の上書き
-      const stoneRows = snap.board.stones; // ["--------", ...]
-      const legal = new Set((snap.legal || []).map(s => s.toLowerCase()));
+      const stones = snap.board.stones;
+      const legal = new Set((snap.legal||[]).map(s=>s.toLowerCase()));
       const xyToPos = (x,y)=> String.fromCharCode(97+x) + (y+1);
+
       for (let y=0; y<SIZE; y++){
         for (let x=0; x<SIZE; x++){
           const cell = boardEl.children[y].children[x];
-          const ch = stoneRows[y][x]; // '-', 'W', 'B'
+          const ch = stones[y][x]; // '-', 'W', 'B'
           cell.setAttribute('data-stone', ch);
           const pos = xyToPos(x,y);
-          const canPlay = legal.has(pos) && (mySeat === snap.turn); // 自分の番のみクリック可
-          cell.setAttribute('data-legal', canPlay ? '1' : '0');
+          const canPlay = legal.has(pos) && (mySeat === snap.turn);
+          cell.setAttribute('data-legal', canPlay ? '1':'0');
         }
       }
       renderHeader(snap);
@@ -95,7 +83,6 @@
       metaEl.textContent = [seats, turn, stat, watch, mine].join('   ');
     }
 
-    // ======= アクション =======
     async function join(){
       const res = await fetch('/api/action', {
         method:'POST',
@@ -111,7 +98,6 @@
 
     async function leave(){
       const body = JSON.stringify({ action:'leave', room, sse: sseId });
-      // 1) keepalive fetch（ヘッダでトークン送付）
       try{
         await fetch('/api/action', {
           method:'POST', keepalive:true,
@@ -119,7 +105,6 @@
           body
         });
       }catch(_){}
-      // 2) 最後の保険として sendBeacon（ヘッダ不可 → sseIdで推定）
       try{
         const blob = new Blob([body], {type:'application/json'});
         navigator.sendBeacon && navigator.sendBeacon('/api/action', blob);
@@ -129,14 +114,11 @@
     async function onCellClick(e){
       const cell = e.currentTarget;
       if (cell.getAttribute('data-legal') !== '1') return;
-      const x = parseInt(cell.dataset.x, 10), y = parseInt(cell.dataset.y, 10);
+      const x = parseInt(cell.dataset.x,10), y = parseInt(cell.dataset.y,10);
       const pos = String.fromCharCode(97+x) + (y+1);
       const res = await fetch('/api/move', {
         method:'POST',
-        headers: {
-          'Content-Type':'application/json',
-          'X-Play-Token': playToken || ''
-        },
+        headers: { 'Content-Type':'application/json', 'X-Play-Token': playToken || '' },
         body: JSON.stringify({ room, pos })
       });
       const snap = await res.json();
@@ -144,36 +126,32 @@
       renderBoard(snapshot);
     }
 
-    // ======= SSE =======
     let es = null;
     function openSSE(){
       if (es) es.close();
-      const url = `/?room=${room}&seat=${mySeat}&sse=${encodeURIComponent(sseId)}`;
-      es = new EventSource(url); // AcceptはFunctions側が付与してDOにプロキシ
+      // ★ ここを /sse に変更（Pages Functions のルーティングに関与しない）
+      const url = `/sse?room=${room}&seat=${mySeat}&sse=${encodeURIComponent(sseId)}`;
+      es = new EventSource(url);
       es.addEventListener('room_state', (ev) => {
         try{
           const snap = JSON.parse(ev.data);
           snapshot = snap;
-          // サーバが観戦fallbackした場合に座席を更新
           if (snap.seat && snap.seat !== mySeat) mySeat = snap.seat;
           renderBoard(snapshot);
         }catch(_){}
       });
-      es.onerror = () => { /* 自動再接続に任せる */ };
     }
 
-    // ======= イベント配線 =======
-    lobbyBtn.addEventListener('click', async (e) => {
+    document.getElementById('toLobby').addEventListener('click', async (e) => {
       e.preventDefault();
       await leave();
       location.href = '/index.html';
     });
     window.addEventListener('pagehide', leave);
 
-    // ======= 起動シーケンス =======
     (async function boot(){
-      await join();       // サーバ判定で観戦fallbackの可能性あり
-      openSSE();         // JOIN後に開く（sseIdで自動leave可能に）
+      await join();
+      openSSE();
     })();
   })();
   </script>

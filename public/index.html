@@ -1,109 +1,58 @@
 <!doctype html>
 <html lang="en">
 <head>
-  <meta charset="utf-8">
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
   <title>Reversi Lobby</title>
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <link rel="stylesheet" href="/style.css">
+  <link rel="stylesheet" href="/style.css" />
+  <style>
+    body { max-width: 960px; margin: 0 auto; padding: 16px; }
+    h1 { margin: 8px 0 16px; }
+    .grid { display:grid; grid-template-columns: repeat(2,1fr); gap:16px; }
+    .card { border: 1px solid #333; border-radius: 10px; padding: 16px; background: #111; }
+    .btn { display:inline-block; padding:6px 10px; margin-right:8px; border-radius:8px; border:1px solid #555; text-decoration:none; }
+    .btn[aria-disabled="true"] { opacity: .4; pointer-events: none; }
+    .muted { opacity:.8; font-size:14px; }
+  </style>
 </head>
 <body>
-  <header class="header">
-    <h1>Reversi Lobby</h1>
-    <!-- デバッグ全初期化（?admin=1 の時だけ表示） -->
-    <button id="debug-reset" style="display:none;margin-left:auto">Reset (ALL)</button>
-  </header>
-
-  <main id="lobby" class="lobby">
-    <div id="boards" class="boards"></div>
-    <p id="lobby-note" class="note" style="display:none;"></p>
-  </main>
+  <h1>Reversi Lobby</h1>
+  <div class="grid" id="rooms"></div>
 
   <script>
-    // ===== util =====
-    const $ = (sel, root=document) => root.querySelector(sel);
-    const $$ = (sel, root=document) => Array.from(root.querySelectorAll(sel));
-
-    // ===== ボードカード生成（Room1..4固定） =====
-    const boardsHost = document.getElementById('boards');
-    function makeCard(room){
-      const wrap = document.createElement('section');
-      wrap.className = 'board-card';
-      wrap.setAttribute('data-room', String(room));
-      wrap.innerHTML = `
-        <h2>Room ${room}</h2>
-        <div class="controls">
-          <button class="seat btn" data-seat="black">Black</button>
-          <button class="seat btn" data-seat="white">White</button>
-          <button class="watch btn" data-seat="observer">Spectator</button>
-        </div>
-        <div class="meta"><span class="watchers">Watching: 0</span></div>
-      `;
-      // クリックで同一オリジンの /?room=..&seat=.. に遷移
-      wrap.querySelectorAll('.seat').forEach(btn=>{
-        btn.addEventListener('click', ()=>{
-          const seat = btn.getAttribute('data-seat');
-          location.href = `/?room=${room}&seat=${seat}`;
-        });
-      });
-      const wbtn = wrap.querySelector('.watch');
-      if (wbtn) {
-        wbtn.addEventListener('click', ()=>{
-          location.href = `/?room=${room}&seat=observer`;
-        });
-      }
-      return wrap;
+  (function(){
+    const roomsEl = document.getElementById('rooms');
+    function card(n, seats, watchers){
+      const s = seats || {black:false, white:false};
+      return `
+        <div class="card" id="room-${n}">
+          <h3>Room ${n}</h3>
+          <div>
+            <a class="btn" href="/reverse.html?room=${n}&seat=black"  aria-disabled="${s.black}">Black</a>
+            <a class="btn" href="/reverse.html?room=${n}&seat=white"  aria-disabled="${s.white}">White</a>
+            <a class="btn" href="/reverse.html?room=${n}&seat=observer">Spectator</a>
+          </div>
+          <div class="muted">Watching: <span class="w">${watchers||0}</span></div>
+        </div>`;
     }
-    // 初期カード配置
-    boardsHost.innerHTML = '';
-    [1,2,3,4].forEach(n => boardsHost.appendChild(makeCard(n)));
+    roomsEl.innerHTML = [1,2,3,4].map(n => card(n)).join('');
 
-    // ===== デバッグ：全初期化（?admin=1で表示） =====
-    (function(){
-      const showReset = new URL(location.href).searchParams.get('admin') === '1';
-      const btn = document.getElementById('debug-reset');
-      if (showReset) {
-        btn.style.display = 'inline-block';
-        btn.addEventListener('click', async ()=>{
-          try {
-            const res = await fetch('/api/admin', { method:'POST' });
-            if (!res.ok) throw new Error();
-            alert('Reset done.');
-          } catch(e) { alert('Reset error'); }
-        });
+    function renderAll(pack){
+      for (const n of [1,2,3,4]){
+        const el = document.getElementById(`room-${n}`);
+        if (!el) continue;
+        const r = pack.rooms?.[n] || {};
+        el.querySelector('[href*="seat=black"]').setAttribute('aria-disabled', r.seats?.black ? 'true':'false');
+        el.querySelector('[href*="seat=white"]').setAttribute('aria-disabled', r.seats?.white ? 'true':'false');
+        el.querySelector('.w').textContent = r.watchers ?? 0;
       }
-    })();
+    }
 
-    // ===== SSE: ロビーまとめ配信（/?room=all） =====
-    (function(){
-      const es = new EventSource('/?room=all', { withCredentials:false });
-      const note = document.getElementById('lobby-note');
-
-      es.addEventListener('open', ()=>{ note.style.display='none'; });
-
-      es.addEventListener('error', ()=>{
-        note.textContent = 'Reconnecting...';
-        note.style.display = 'block';
-      });
-
-      es.addEventListener('room_state', ev=>{
-        try{
-          const msg = JSON.parse(ev.data);
-          const boards = msg?.state?.boards || [];
-          boards.forEach(b=>{
-            const card = document.querySelector(`.board-card[data-room="${b.room}"]`);
-            if (!card) return;
-            // 座席ボタンの活性/非活性
-            const blackBtn = card.querySelector('.seat[data-seat="black"]');
-            const whiteBtn = card.querySelector('.seat[data-seat="white"]');
-            if (blackBtn) blackBtn.disabled = (b.seats?.black === 'taken');
-            if (whiteBtn) whiteBtn.disabled = (b.seats?.white === 'taken');
-            // 観戦者数
-            const w = card.querySelector('.watchers');
-            if (w) w.textContent = `Watching: ${b.watchers ?? 0}`;
-          });
-        }catch(_){}
-      });
-    })();
+    const es = new EventSource('/sse?room=all');
+    es.addEventListener('room_state', (ev)=>{
+      try { renderAll(JSON.parse(ev.data)); } catch(_){}
+    });
+  })();
   </script>
 </body>
 </html>
