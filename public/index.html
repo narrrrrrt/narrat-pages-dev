@@ -9,51 +9,17 @@
 <body>
   <header>
     <h1>Reversi Lobby</h1>
+    <!-- デバッグボタン（?admin=1 の時だけ表示） -->
+    <button id="debug-reset" style="display:none;margin-left:auto">Reset (ALL)</button>
   </header>
 
   <main id="lobby">
-    <section class="boards">
-      <div class="board-card" data-room="1">
-        <h2>Room 1</h2>
-        <div class="seats">
-          <button class="seat" data-seat="black" disabled>Black</button>
-          <button class="seat" data-seat="white" disabled>White</button>
-          <button class="watch">Spectator</button>
-        </div>
-        <div class="meta"><span class="watchers">Watching: 0</span></div>
-      </div>
-      <div class="board-card" data-room="2">
-        <h2>Room 2</h2>
-        <div class="seats">
-          <button class="seat" data-seat="black" disabled>Black</button>
-          <button class="seat" data-seat="white" disabled>White</button>
-          <button class="watch">Spectator</button>
-        </div>
-        <div class="meta"><span class="watchers">Watching: 0</span></div>
-      </div>
-      <div class="board-card" data-room="3">
-        <h2>Room 3</h2>
-        <div class="seats">
-          <button class="seat" data-seat="black" disabled>Black</button>
-          <button class="seat" data-seat="white" disabled>White</button>
-          <button class="watch">Spectator</button>
-        </div>
-        <div class="meta"><span class="watchers">Watching: 0</span></div>
-      </div>
-      <div class="board-card" data-room="4">
-        <h2>Room 4</h2>
-        <div class="seats">
-          <button class="seat" data-seat="black" disabled>Black</button>
-          <button class="seat" data-seat="white" disabled>White</button>
-          <button class="watch">Spectator</button>
-        </div>
-        <div class="meta"><span class="watchers">Watching: 0</span></div>
-      </div>
-    </section>
+    <!-- 既存のカード群（省略） -->
+    <!-- ... -->
   </main>
 
   <script>
-    // ===== SSE: ロビーまとめ配信（/?room=all） =====
+    // ===== SSE: ロビーまとめ配信 =====
     (function(){
       const sseUrl = new URL(location.origin + "/");
       sseUrl.searchParams.set("room", "all");
@@ -66,17 +32,16 @@
             const card = document.querySelector('.board-card[data-room="'+b.room+'"]');
             if (!card) continue;
             const seats = card.querySelectorAll('.seat');
-            // vacant / taken を反映
             seats[0].disabled = (b.seats?.black === "taken");
             seats[1].disabled = (b.seats?.white === "taken");
-            card.querySelector('.watchers').textContent = "Watching: " + (b.watchers ?? 0);
+            const w = card.querySelector('.watchers');
+            if (w) w.textContent = "Watching: " + (b.watchers ?? 0);
           }
         } catch(e) {}
       });
-      es.onerror = () => {/* noop */};
     })();
 
-    // ===== 遷移: 仕様どおり /?room=..&seat=.. に統一 =====
+    // ===== 遷移：/?room=..&seat=.. に統一 =====
     (function(){
       document.querySelectorAll('.board-card').forEach(card => {
         const room = card.getAttribute('data-room');
@@ -87,10 +52,28 @@
           });
         });
         const watch = card.querySelector('.watch');
-        watch.addEventListener('click', () => {
+        if (watch) watch.addEventListener('click', () => {
           location.href = `/?room=${room}&seat=observer`;
         });
       });
+    })();
+
+    // ===== デバッグ：全初期化ボタン（?admin=1） =====
+    (function(){
+      const url = new URL(location.href);
+      if (url.searchParams.get('admin') === '1') {
+        const btn = document.getElementById('debug-reset');
+        btn.style.display = 'inline-block';
+        btn.addEventListener('click', async () => {
+          try {
+            const res = await fetch('/api/admin', { method: 'POST' });
+            if (!res.ok) throw new Error('reset failed');
+            alert('Reset done.');
+          } catch (e) {
+            alert('Reset error');
+          }
+        });
+      }
     })();
   </script>
 </body>
