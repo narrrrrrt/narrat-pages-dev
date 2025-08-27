@@ -1,38 +1,64 @@
 // functions/api/action.ts
-import { snapshot, tokens, makeToken, startingBoard } from "./_state";
+import {
+  tokens,
+  makeToken,
+  startingBoard,
+  applyJoin,
+  applyLeave,
+  getRoomSnapshot,
+  broadcast,
+  Seat,
+} from "./_state";
 
 export const onRequestPost: PagesFunction = async (context) => {
   const { request } = context;
-  const body = await request.json().catch(()=> ({}));
-  const action = body?.action;
+  const body = await request.json().catch(() => ({}));
+  const action = String(body?.action || "");
   const room = Number(body?.room);
-  const seat = String(body?.seat || "observer") as "black"|"white"|"observer";
+  const requestedSeat = String(body?.seat || "observer") as Seat;
 
-  let headers = new Headers({ "content-type": "application/json; charset=utf-8" });
+  const headers = new Headers({ "content-type": "application/json; charset=utf-8" });
 
   if (action === "join") {
-    // Issue a short token and remember it (demo only)
+    // 更新
+    const finalSeat = applyJoin(room, requestedSeat);
+
+    // token
     const token = makeToken(8);
-    tokens.set(token, { room, seat });
+    tokens.set(token, { room, seat: finalSeat });
     headers.set("X-Play-Token", token);
-    // Mark this as a cookie for demo (spec doesn't fix transport; cookie is convenient)
-        const snap = snapshot(room, seat, seat === "observer" ? "waiting" : "black", seat === "observer" ? null : "black", startingBoard(), [], 0);
+
+    // ブロードキャスト（ロビー＋該当ルーム）
+    broadcast(room);
+
+    // レスポンス（スナップショット）
+    const snap = getRoomSnapshot(room);
+    // 呼び出し側の自席を入れて返す
+    (snap as any).seat = finalSeat;
     return new Response(JSON.stringify(snap), { headers, status: 200 });
   }
 
   if (action === "leave") {
-    // read token from cookie (demo)
-    const cookie = request.headers.get("cookie") || "";
-    const m = /(?:^|;\s*)rtok=([^;]+)/.exec(cookie);
-    if (m) {
-      const token = decodeURIComponent(m[1]);
+    // token / seat 判定
+    const token = request.headers.get("X-Play-Token") || "";
+    let seat: Seat = requestedSeat;
+    if (token && tokens.has(token)) seat = tokens.get(token)!.seat;
+    if (token) {
       tokens.delete(token);
       headers.set("X-Log-Event", "token-deleted");
       headers.set("X-Token", token);
     }
-    const snap = snapshot(room, seat, "waiting", null, startingBoard(), [], 0);
+
+    applyLeave(room, seat);
+    broadcast(room);
+
+    const snap = getRoomSnapshot(room);
+    (snap as any).seat = seat;
     return new Response(JSON.stringify(snap), { headers, status: 200 });
   }
 
-  return new Response(JSON.stringify({ ok:false, reason:"unsupported_action" }), { headers, status: 400 });
+  return new Response(JSON.stringify({ ok: false, reason: "unsupported_action" }), {
+    headers,
+    status: 400,
+  });
 };
