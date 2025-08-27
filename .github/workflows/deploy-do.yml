@@ -1,4 +1,4 @@
-# 1) 展開して入る
+# 1) 展開して入る 
 unzip reversi_scaffold.zip -d reversi
 cd reversi
 
