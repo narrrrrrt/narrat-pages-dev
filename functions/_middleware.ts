@@ -1,25 +1,72 @@
 // functions/_middleware.ts
-// Logs policy: console logs only on first move and when token is deleted.
-// R2 long-term logging for HTML/text is left to implementation per specs.
+// 1) SSE: /?room=... は DO にプロキシ
+// 2) それ以外は next() に通す
+// 3) next() のレスポンスを見て HTML/PLAIN を R2 に記録
 
-export const onRequest: PagesFunction = async (context) => {
-  const { request, next } = context;
-  // pass to route handler
-  const res = await next();
+type LogItem = {
+  ts: number;
+  url: string;
+  code: number;
+  ip?: string | null;
+  ua?: string | null;
+};
 
-  // Look for route handlers signaling a log event via response headers
-  const logEvent = res.headers.get("X-Log-Event");
-  if (logEvent === "first-move") {
-    const seat = res.headers.get("X-Seat") ?? "";
-    const room = res.headers.get("X-Room") ?? "";
-    const token = res.headers.get("X-Token") ?? "";
-    console.log(JSON.stringify({ event: "first_move", seat, room, token }));
-  } else if (logEvent === "token-deleted") {
-    const token = res.headers.get("X-Token") ?? "";
-    console.log(JSON.stringify({ event: "token_deleted", token }));
+export const onRequest: PagesFunction = async (ctx) => {
+  const { request, env, next } = ctx;
+  const url = new URL(request.url);
+  const accept = request.headers.get("Accept") || "";
+
+  // --- 1) SSE ---
+  if (accept.includes("text/event-stream") && url.searchParams.has("room")) {
+    const id = env.REVERSI_HUB.idFromName("global");
+    const stub = env.REVERSI_HUB.get(id);
+
+    const doUrl = new URL("/sse" + url.search, "https://do.local");
+    return await stub.fetch(doUrl, {
+      method: "GET",
+      headers: { "Accept": "text/event-stream", "Cache-Control": "no-cache" },
+    });
   }
 
-  // (Optional) R2 logging for HTML/text responses can be implemented here.
+  // --- 2) その他は通常処理 ---
+  const res = await next();
+
+  // --- 3) ログ対象か確認 ---
+  try {
+    const ct = (res.headers.get("Content-Type") || "").toLowerCase();
+    const isEventStream = ct.includes("text/event-stream");
+    const isHtml = ct.includes("text/html");
+    const isPlain = ct.includes("text/plain");
+
+    if (!isEventStream && (isHtml || isPlain)) {
+      const item: LogItem = {
+        ts: Date.now(),
+        url: url.toString(),
+        code: res.status,
+        ip: request.headers.get("CF-Connecting-IP"),
+        ua: request.headers.get("User-Agent"),
+      };
+
+      const bucket = env.LOG_BUCKET as R2Bucket;
+      const now = new Date();
+      const key = `logs/${now.getUTCFullYear()}-${String(
+        now.getUTCMonth() + 1
+      ).padStart(2, "0")}/${now.getUTCDate()}/min-${String(
+        now.getUTCHours()
+      ).padStart(2, "0")}${String(now.getUTCMinutes()).padStart(2, "0")}.jsonl`;
+
+      let prev = "";
+      const exist = await bucket.get(key);
+      if (exist) prev = await exist.text();
+
+      const body = (prev ? prev + "\n" : "") + JSON.stringify(item);
+      await bucket.put(key, body, {
+        httpMetadata: { contentType: "application/json" },
+      });
+    }
+  } catch (e) {
+    console.warn("log error", e);
+  }
 
   return res;
 };

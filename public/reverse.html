@@ -1,106 +1,190 @@
 <!doctype html>
 <html lang="en">
 <head>
-  <meta charset="utf-8">
-  <title>Reversi Room</title>
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <link rel="stylesheet" href="/reverse.css">
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Reversi</title>
+  <link rel="stylesheet" href="/reverse.css" />
+  <style>
+    header { display:flex; align-items:center; justify-content:space-between; padding:12px 16px; font-weight:600; }
+    header .meta { font-weight:400; font-size:14px; opacity:.9 }
+    #board { width:min(92vw,560px); margin:24px auto; }
+    #toLobby { margin-left:16px; font-size:14px; }
+    .row { display:flex; }
+    .cell { position:relative; width:48px; height:48px; margin:2px; border-radius:8px; border:1px solid #0b0b0b; background:#2c7a2c; outline:none; cursor:pointer; }
+    .cell[data-stone="white"]::after, .cell[data-stone="black"]::after { content:""; position:absolute; inset:20%; border-radius:50%; box-shadow: inset 0 0 4px rgba(0,0,0,.6); }
+    .cell[data-stone="white"]::after { background:#eee; }
+    .cell[data-stone="black"]::after { background:#111; }
+    .cell[data-legal="1"]::before { content:""; position:absolute; inset:40%; border-radius:50%; border:2px solid #eee; box-shadow:0 0 0 1px #000; }
+    .debug { max-width:min(92vw,560px); margin: 8px auto 24px; padding: 10px 12px; border:1px solid #e2e8f0; border-radius:10px; background:#fbfdff; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; color:#223; font-size:12px; }
+    .debug pre { white-space: pre-wrap; word-break: break-word; margin:6px 0 0; line-height:1.35; }
+  </style>
 </head>
 <body>
   <header>
-    <h1>Reversi</h1>
-    <div id="indicators">
-      <span id="turn">-</span>
-      <span id="status">waiting</span>
-      <span id="watchers">Watching: 0</span>
-    </div>
+    <div style="font-size:28px;">Reversi</div>
+    <div class="meta" id="meta">–</div>
   </header>
 
-  <main>
-    <div id="board" class="board"></div>
-  </main>
+  <main><div id="board"></div></main>
+  <nav style="text-align:center;margin:8px 0 8px;">
+    <a href="#" id="toLobby">Lobby</a>
+  </nav>
+
+  <div class="debug" id="debugBox">
+    <div><strong>Debug (room stream)</strong> -- source: <code id="dbgSrc">/?room=?</code></div>
+    <div id="dbgMeta">–</div>
+    <pre id="dbgJson">–</pre>
+  </div>
 
   <script>
-  // parse query
-  const params = new URLSearchParams(location.search);
-  const room = params.get("room");
-  const seat = params.get("seat") || "observer";
+  (() => {
+    const params = new URLSearchParams(location.search);
+    const room = parseInt(params.get('room') || '1', 10);
+    const wantSeat = (params.get('seat') || 'observer').toLowerCase();
+    const sseId = (crypto && crypto.randomUUID ? crypto.randomUUID() : Math.random().toString(36).slice(2));
 
-  // join on load (no cookies; token via response header)
-  let playToken = sessionStorage.getItem("ptok") || "";
-  (async function joinOnce(){
-    try {
-      const res = await fetch("/api/action", {
-        method: "POST",
-        headers: { "content-type": "application/json", "X-Play-Token": playToken || "" },
-        body: JSON.stringify({ action: "join", room: Number(room), seat })
-      });
-      const tok = res.headers.get("X-Play-Token");
-      if (tok) {
-        playToken = tok;
-        sessionStorage.setItem("ptok", tok);
+    const metaEl = document.getElementById('meta');
+    const boardEl = document.getElementById('board');
+    const dbgSrc = document.getElementById('dbgSrc');
+    const dbgMeta = document.getElementById('dbgMeta');
+    const dbgJson = document.getElementById('dbgJson');
+
+    let playToken = sessionStorage.getItem('X-Play-Token') || '';
+    let mySeat = 'observer';
+    let snapshot = null;
+    let eventCount = 0;
+
+    const SIZE = 8;
+
+    function mapStoneCharToName(ch){ if (ch === 'W') return 'white'; if (ch === 'B') return 'black'; return ''; }
+
+    function renderBoard(snap){
+      if (!boardEl.dataset.wired) {
+        boardEl.innerHTML = '';
+        for (let y=0; y<SIZE; y++){
+          const row = document.createElement('div');
+          row.className = 'row';
+          for (let x=0; x<SIZE; x++){
+            const cell = document.createElement('button');
+            cell.className = 'cell'; cell.dataset.x = x; cell.dataset.y = y;
+            cell.addEventListener('click', onCellClick);
+            row.appendChild(cell);
+          }
+          boardEl.appendChild(row);
+        }
+        boardEl.dataset.wired = '1';
       }
-      const snap = await res.json().catch(()=>null);
-      if (snap) applySnapshot(snap);
-    } catch(e){}
-  })();
+      const stones = snap.board.stones;
+      const legalSet = new Set((snap.legal||[]).map(s=>s.toLowerCase()));
+      const xyToPos = (x,y)=> String.fromCharCode(97+x) + (y+1);
 
-  // before unload: leave
-  addEventListener("beforeunload", () => {
-    if (!room) return;
-    navigator.sendBeacon("/api/action", new Blob([JSON.stringify({ action:"leave", room: Number(room), seat })], {type:"application/json"}));
-  });
+      for (let y=0; y<SIZE; y++){
+        for (let x=0; x<SIZE; x++){
+          const cell = boardEl.children[y].children[x];
+          const ch = stones[y][x];
+          const name = mapStoneCharToName(ch);
+          if (name) cell.setAttribute('data-stone', name); else cell.removeAttribute('data-stone');
 
-
-  // draw empty board
-  const boardEl = document.getElementById("board");
-  for (let y=0; y<8; y++){
-    for (let x=0; x<8; x++){
-      const cell = document.createElement("button");
-      cell.className = "cell";
-      cell.dataset.pos = String.fromCharCode(97+x) + (y+1);
-      cell.addEventListener("click", () => {
-        if (seat === "observer") return;
-        fetch("/api/move", {
-          method: "POST",
-          headers: { "content-type": "application/json", "X-Play-Token": playToken || "" },
-          body: JSON.stringify({ room: Number(room), seat, pos: cell.dataset.pos })
-        }).then(r => r.json()).then(snap => {
-          // apply snapshot (very naive)
-          applySnapshot(snap);
-        }).catch(()=>{});
-      });
-      boardEl.appendChild(cell);
-    }
-  }
-
-  function applySnapshot(snap){
-    if (!snap || !snap.board) return;
-    document.getElementById("turn").textContent = snap.turn ?? "-";
-    document.getElementById("status").textContent = snap.status ?? "waiting";
-    document.getElementById("watchers").textContent = "Watching: " + (snap.watchers ?? 0);
-    // update tiles from stones array
-    if (Array.isArray(snap.board.stones)){
-      for (let y=0; y<8; y++){
-        for (let x=0; x<8; x++){
-          const pos = String.fromCharCode(97+x) + (y+1);
-          const cell = document.querySelector('.cell[data-pos="'+pos+'"]');
-          const ch = (snap.board.stones[y] || "-".repeat(8))[x] || "-";
-          cell.textContent = ch === "B" ? "●" : (ch === "W" ? "○" : "");
+          const pos = xyToPos(x,y);
+          const canPlay = legalSet.has(pos) && (mySeat === snap.turn);
+          cell.setAttribute('data-legal', canPlay ? '1':'0');
         }
       }
+      renderHeader(snap);
     }
-  }
 
-  // SSE
-  (function(){
-    const sseUrl = new URL(location.origin + "/");
-    sseUrl.searchParams.set("room", room);
-    sseUrl.searchParams.set("seat", seat);
-    const es = new EventSource(sseUrl);
-    es.addEventListener("room_state", (ev)=>{
-      try { applySnapshot(JSON.parse(ev.data)); } catch(e){}
+    function renderHeader(snap){
+      const seats = `Seats: Black ${snap.seats && snap.seats.black ? '✓':'–'} / White ${snap.seats && snap.seats.white ? '✓':'–'}`;
+      const turn  = `Turn: ${snap.turn==='black'?'●':snap.turn==='white'?'○':'–'}`;
+      const stat  = `Status: ${snap.status || 'waiting'}`;
+      const watch = `Watching: ${snap.watchers ?? 0}`;
+      const mine  = `You: ${mySeat}`;
+      metaEl.textContent = [seats, turn, stat, watch, mine].join('   ');
+    }
+
+    function updateDebug(snap, note=''){
+      eventCount++;
+      dbgMeta.textContent = `events=${eventCount}  note=${note}  ts=${new Date().toLocaleTimeString()}  seat=${mySeat}  turn=${snap.turn}`;
+      dbgJson.textContent = JSON.stringify(snap, null, 2);
+      console.debug('[room_state]', {eventCount, mySeat, snap});
+    }
+
+    async function join(){
+      const res = await fetch('/api/action', {
+        method:'POST',
+        headers: { 'Content-Type':'application/json' },
+        body: JSON.stringify({ action:'join', room, seat: wantSeat, sse: sseId })
+      });
+      playToken = res.headers.get('X-Play-Token') || '';
+      if (playToken) sessionStorage.setItem('X-Play-Token', playToken);
+      snapshot = await res.json();
+      mySeat = snapshot.seat || snapshot.mySeat || wantSeat;
+      renderBoard(snapshot);
+      updateDebug(snapshot, 'after join');
+    }
+
+    async function leave(){
+      const body = JSON.stringify({ action:'leave', room, sse: sseId });
+      try{
+        await fetch('/api/action', {
+          method:'POST', keepalive:true,
+          headers: { 'Content-Type':'application/json', 'X-Play-Token': playToken || '' },
+          body
+        });
+      }catch(_){}
+      try{
+        const blob = new Blob([body], {type:'application/json'});
+        navigator.sendBeacon && navigator.sendBeacon('/api/action', blob);
+      }catch(_){}
+    }
+
+    async function onCellClick(e){
+      const cell = e.currentTarget;
+      if (cell.getAttribute('data-legal') !== '1') return;
+      const x = parseInt(cell.dataset.x,10), y = parseInt(cell.dataset.y,10);
+      const pos = String.fromCharCode(97+x) + (y+1);
+      const res = await fetch('/api/move', {
+        method:'POST',
+        headers: { 'Content-Type':'application/json', 'X-Play-Token': playToken || '' },
+        body: JSON.stringify({ room, pos })
+      });
+      const snap = await res.json();
+      snapshot = snap;
+      renderBoard(snapshot);
+      updateDebug(snapshot, `played ${pos}`);
+    }
+
+    // ★ ルームSSEを /?room=... に戻す
+    let es = null;
+    function openSSE(){
+      if (es) es.close();
+      const url = `/?room=${room}&seat=${mySeat}&sse=${encodeURIComponent(sseId)}`;
+      dbgSrc.textContent = url;
+      es = new EventSource(url);
+      es.addEventListener('room_state', (ev) => {
+        try{
+          const snap = JSON.parse(ev.data);
+          snapshot = snap;
+          if (snap.seat && snap.seat !== mySeat) mySeat = snap.seat; // 観戦fallback等
+          renderBoard(snapshot);
+          updateDebug(snapshot, 'stream');
+        }catch(err){ console.warn('bad event', err); }
+      });
+      es.onerror = () => { updateDebug(snapshot || {status:'unknown'}, 'sse error'); };
+    }
+
+    document.getElementById('toLobby').addEventListener('click', async (e) => {
+      e.preventDefault();
+      await leave();
+      location.href = '/index.html';
     });
+    window.addEventListener('pagehide', leave);
+
+    (async function boot(){
+      await join();
+      openSSE();
+    })();
   })();
   </script>
 </body>

@@ -1,18 +1,23 @@
-// functions/api/move.ts -- v0.4
-export const onRequestPost: PagesFunction = async (context) => {
-  const { request, env } = context;
+// functions/api/move.ts
+import type { Env } from '../types';
 
-  const id = env.REVERSI_HUB.idFromName("global");
+export const onRequestPost: PagesFunction<Env> = async (ctx) => {
+  const { request, env } = ctx;
+  const id = env.REVERSI_HUB.idFromName('global');
   const stub = env.REVERSI_HUB.get(id);
 
-  const headers = new Headers(request.headers);
-  const init: RequestInit = {
-    method: "POST",
+  const body = await request.text();
+  const url = new URL('/move', 'https://do.local');
+  const doReq = new Request(url, {
+    method: 'POST',
+    body,
     headers: {
-      "content-type": "application/json",
-      "X-Play-Token": headers.get("X-Play-Token") || "",
-    },
-    body: await request.text(),
-  };
-  return stub.fetch("https://do/move", init);
+      'Content-Type': 'application/json',
+      'X-Play-Token': request.headers.get('X-Play-Token') || '',
+    }
+  });
+
+  const res = await stub.fetch(doReq);
+  // （初手ログなどのためのヘッダはそのまま通す）
+  return new Response(res.body, { status: res.status, headers: res.headers });
 };
