@@ -6,36 +6,74 @@
   <title>Reversi Lobby</title>
   <link rel="stylesheet" href="/style.css" />
   <style>
-    body { max-width: 980px; margin: 0 auto; padding: 16px; }
+    /* --- レイアウト: 1段、白基調 --- */
+    :root { color-scheme: light dark; }
+    body { max-width: 980px; margin: 0 auto; padding: 16px; background:#fff; color:#111; }
     h1 { margin: 8px 0 16px; }
-    .grid { display:grid; grid-template-columns: repeat(2,1fr); gap:16px; }
-    .card { border: 1px solid #333; border-radius: 12px; padding: 16px; background: #111; }
-    .row { margin-top: 8px; }
-    .btn {
-      display:inline-block; padding:8px 12px; margin:0 8px 8px 0;
-      border-radius:10px; border:1px solid #6bf; color:#6bf; text-decoration:none; background:#161a20;
+
+    .stack { display:flex; flex-direction:column; gap:16px; }
+
+    .card {
+      border: 1px solid #d4d7dd; border-radius: 12px; padding: 16px;
+      background: #fafbfc;
+      box-shadow: 0 1px 2px rgba(0,0,0,.03);
     }
-    .btn:hover { filter: brightness(1.2); }
-    .btn[aria-disabled="true"] { opacity:.35; pointer-events:none; }
+    .row { margin-top: 8px; display:flex; gap:10px; flex-wrap:wrap; }
+
+    .btn {
+      display:inline-block; padding:8px 12px; border-radius:10px;
+      border:1px solid #2b6cb0; color:#2b6cb0; background:#eef6ff;
+      text-decoration:none; font-weight:600;
+      transition: transform .02s ease, filter .15s ease;
+    }
+    .btn:active { transform: translateY(1px); }
+    .btn:hover { filter: brightness(1.04); }
+    .btn[disabled], .btn[aria-disabled="true"] {
+      border-color:#c2c7cf; color:#a5adb8; background:#f3f5f7;
+      pointer-events:none;
+    }
+    .pill { display:inline-block; padding:2px 8px; border-radius:999px; font-size:12px; background:#eef2f7; border:1px solid #d4d7dd; color:#445; }
     .muted { opacity:.85; font-size:14px; }
-    /* admin */
-    .admin { margin: 12px 0 20px; padding: 12px; border:1px dashed #555; border-radius:10px; background:#0d0f12; }
-    .admin .btn-danger { border-color:#f66; color:#f66; }
+
+    /* Admin */
+    .admin {
+      margin: 12px 0 20px; padding: 12px; border:1px dashed #c9ced6; border-radius:10px; background:#f7fafc;
+    }
+    .btn-danger { border-color:#c53030; color:#c53030; background:#fff5f5; }
+
+    /* Debug area */
+    .debug {
+      margin-top: 24px; padding: 12px; border:1px solid #e2e8f0; border-radius:10px; background:#fbfdff;
+      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      color:#223;
+    }
+    .debug pre { white-space: pre-wrap; word-break: break-word; margin:8px 0 0; font-size:12px; line-height:1.4; }
+    .k { color:#055; } .v { color:#303; }
   </style>
 </head>
 <body>
   <h1>Reversi Lobby</h1>
 
+  <!-- Admin（?admin=1 で表示） -->
   <div id="admin" class="admin" style="display:none">
     <strong>Admin</strong><br/>
     <button id="btnInit" class="btn btn-danger">Initialize database (reset rooms)</button>
     <span id="adminMsg" class="muted" style="margin-left:8px;"></span>
   </div>
 
-  <div class="grid" id="rooms"></div>
+  <!-- 1段レイアウト -->
+  <div class="stack" id="rooms"></div>
+
+  <!-- ライブデバッグ -->
+  <div class="debug" id="debug">
+    <div><strong>Debug (live)</strong> -- snapshot from <code>/sse?room=all</code></div>
+    <div class="muted" id="dbgMeta">--</div>
+    <pre id="dbgJson">--</pre>
+  </div>
 
   <script>
   (function(){
+    // --- Admin toggle ---
     const qs = new URLSearchParams(location.search);
     const showAdmin = qs.get('admin') === '1';
     const adminBox = document.getElementById('admin');
@@ -47,36 +85,83 @@
       };
     }
 
+    // --- DOM refs ---
     const roomsEl = document.getElementById('rooms');
+    const dbgMeta = document.getElementById('dbgMeta');
+    const dbgJson = document.getElementById('dbgJson');
+
+    // --- Room card template ---
     function card(n, seats, watchers){
       const s = seats || {black:false, white:false};
+      // 席が埋まっているボタンは "disabled"（見た目も押せない）にする
+      // さらに隠したい場合は data-hide="1" を true にしておく
+      const hideTaken = true;
+
+      const btnBlack = hideTaken && s.black ? '' :
+        `<a class="btn" href="/reverse.html?room=${n}&seat=black" ${s.black ? 'aria-disabled="true" disabled':''}>Black</a>`;
+      const btnWhite = hideTaken && s.white ? '' :
+        `<a class="btn" href="/reverse.html?room=${n}&seat=white" ${s.white ? 'aria-disabled="true" disabled':''}>White</a>`;
+
       return `
         <div class="card" id="room-${n}">
-          <h3>Room ${n}</h3>
+          <div style="display:flex;align-items:center;justify-content:space-between;gap:8px;">
+            <h3 style="margin:0;">Room ${n}</h3>
+            <span class="pill">Watching: <span class="w">${watchers||0}</span></span>
+          </div>
           <div class="row">
-            <a class="btn" href="/reverse.html?room=${n}&seat=black"  aria-disabled="${s.black}">Black</a>
-            <a class="btn" href="/reverse.html?room=${n}&seat=white"  aria-disabled="${s.white}">White</a>
+            ${btnBlack}
+            ${btnWhite}
             <a class="btn" href="/reverse.html?room=${n}&seat=observer">Spectator</a>
           </div>
-          <div class="muted">Watching: <span class="w">${watchers||0}</span></div>
+          <div class="muted" style="margin-top:4px;">
+            Seats: Black ${s.black ? 'occupied':'vacant'} / White ${s.white ? 'occupied':'vacant'}
+          </div>
         </div>`;
     }
+
+    // 初期描画（空コンテナを用意）
     roomsEl.innerHTML = [1,2,3,4].map(n => card(n)).join('');
 
+    // --- Render from SSE pack ---
     function renderAll(pack){
+      // デバッグ面（ヘッダ）
+      const ts = pack.ts ? new Date(pack.ts).toLocaleTimeString() : new Date().toLocaleTimeString();
+      dbgMeta.textContent = `ts=${ts}`;
+      // デバッグ面（JSON）
+      dbgJson.textContent = JSON.stringify(pack, null, 2);
+
+      // UI
       for (const n of [1,2,3,4]){
         const el = document.getElementById(`room-${n}`);
         if (!el) continue;
-        const r = pack.rooms?.[n] || {};
-        el.querySelector('[href*="seat=black"]').setAttribute('aria-disabled', r.seats?.black ? 'true':'false');
-        el.querySelector('[href*="seat=white"]').setAttribute('aria-disabled', r.seats?.white ? 'true':'false');
+        const r = pack.rooms?.[n] || { seats:{black:false,white:false}, watchers:0 };
+
+        const btnB = el.querySelector('[href*="seat=black"]');
+        const btnW = el.querySelector('[href*="seat=white"]');
+
+        // 占有ならボタンを隠す／空きなら表示
+        if (btnB){
+          if (r.seats?.black){ btnB.setAttribute('aria-disabled','true'); btnB.setAttribute('disabled',''); btnB.style.display='none'; }
+          else { btnB.removeAttribute('aria-disabled'); btnB.removeAttribute('disabled'); btnB.style.display='inline-block'; }
+        }
+        if (btnW){
+          if (r.seats?.white){ btnW.setAttribute('aria-disabled','true'); btnW.setAttribute('disabled',''); btnW.style.display='none'; }
+          else { btnW.removeAttribute('aria-disabled'); btnW.removeAttribute('disabled'); btnW.style.display='inline-block'; }
+        }
+
         el.querySelector('.w').textContent = r.watchers ?? 0;
+        el.querySelector('.muted').textContent =
+          `Seats: Black ${r.seats?.black ? 'occupied':'vacant'} / White ${r.seats?.white ? 'occupied':'vacant'}`;
       }
     }
 
+    // --- SSE (lobby aggregate) ---
     const es = new EventSource('/sse?room=all');
     es.addEventListener('room_state', (ev)=>{
-      try { renderAll(JSON.parse(ev.data)); } catch(_){}
+      try {
+        const pack = JSON.parse(ev.data);
+        renderAll(pack);
+      } catch(_){}
     });
   })();
   </script>
