@@ -1,0 +1,12 @@
+/
+├─ public/
+│   ├─ index.html
+│   └─ reverse.html
+├─ functions/
+│   ├─ api/
+│   │   ├─ action.ts
+│   │   └─ move.ts
+│   └─ sse.ts
+├─ workers/
+│   └─ do-worker/
+└─ _routes.json   ← ここ！
