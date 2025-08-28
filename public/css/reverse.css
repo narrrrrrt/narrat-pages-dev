@@ -8,7 +8,6 @@
   --board-green:#1f7a3b;
   --board-green-dark:#166534;
 
-  --cell-shadow:rgba(0,0,0,.35);
   --cell-size:46px;
   --cell-gap:6px;
   --board-pad:14px;
@@ -40,8 +39,7 @@ body{
 .stage{display:flex; justify-content:center; padding:8px 0 32px}
 #board{
   position:relative; background:var(--board-green-dark);
-  padding:var(--board-pad); border-radius:16px;
-  box-shadow:0 10px 26px rgba(0,0,0,.08), 0 8px 18px rgba(0,0,0,.08) inset;
+  padding:var(--board-pad); border-radius:0; /* フラット */
 }
 
 .grid{
@@ -53,8 +51,9 @@ body{
 }
 .cell{
   width:var(--cell-size); height:var(--cell-size);
-  background:var(--board-green); border-radius:12px;
-  box-shadow:0 3px 0 var(--cell-shadow) inset, 0 -2px 0 rgba(255,255,255,.06) inset;
+  background:var(--board-green);
+  border-radius:0;        /* 角を落とさない */
+  box-shadow:none;        /* 影なし */
 }
 
 /* stones & legal marks */
@@ -62,7 +61,6 @@ body{
 .stone{
   position:absolute; width:calc(var(--cell-size) - 12px); height:calc(var(--cell-size) - 12px);
   border-radius:50%; transform:translate(-50%,-50%);
-  box-shadow:0 4px 10px rgba(0,0,0,.35), 0 -2px 0 rgba(255,255,255,.08) inset;
 }
 .stone.black{background:var(--stone-black)}
 .stone.black::after{
@@ -78,16 +76,23 @@ body{
 .legal{
   position:absolute; width:14px; height:14px; border-radius:50%;
   transform:translate(-50%,-50%);
-  background:var(--legal); box-shadow:0 0 0 4px rgba(255,154,47,.18);
+  background:var(--legal);
   pointer-events:none;
 }
 
 /* modal */
-.modal-backdrop{position:fixed; inset:0; background:rgba(0,0,0,.35); display:none; align-items:center; justify-content:center; z-index:1000}
-.modal{min-width:280px; max-width:90vw; background:#fff; color:#111; border-radius:12px; padding:18px 16px 12px; box-shadow:0 10px 30px rgba(0,0,0,.35)}
+.modal-backdrop{
+  position:fixed; inset:0; background:rgba(0,0,0,.35);
+  display:none; align-items:center; justify-content:center; z-index:1000
+}
+.modal{min-width:280px; max-width:90vw; background:#fff; color:#111;
+  border-radius:12px; padding:18px 16px 12px; box-shadow:0 10px 30px rgba(0,0,0,.25)}
 .modal .msg{margin:0 0 16px}
 .modal .row{display:flex; justify-content:flex-end}
-.modal .btn{appearance:none; border:1px solid var(--badge-br); background:#f7f7f8; padding:8px 14px; border-radius:8px; font-weight:600; cursor:pointer}
+.modal .btn{
+  appearance:none; border:1px solid var(--badge-br); background:#f7f7f8;
+  padding:8px 14px; border-radius:8px; font-weight:600; cursor:pointer
+}
 .modal .btn:active{transform:translateY(1px)}
 
 @media (max-width:480px){

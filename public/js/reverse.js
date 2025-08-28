@@ -1,6 +1,5 @@
-// Reversi room client 0.9g
+// Reversi room client 0.9h
 (() => {
-  // ---- DOM refs ----
   const q = (s) => document.querySelector(s);
   const hud = {
     room: q('#hud-room'), seat: q('#hud-seat'),
@@ -12,21 +11,19 @@
   const legalsEl = q('#legals');
   const lobbyLink = q('#to-lobby');
 
-  // ---- state ----
   const url = new URL(location.href);
   const room = Number(url.searchParams.get('room') || '1');
   const wantSeat = (url.searchParams.get('seat') || 'observer');
   let seat = 'observer';
   let status = 'waiting';
-  let turn = null;     // 'black' | 'white' | null
+  let turn = null;
   let token = localStorage.getItem('playToken') || '';
-  let sse;             // EventSource
-  let sseId = Math.random().toString(36).slice(2);
+  let sse; let sseId = Math.random().toString(36).slice(2);
 
-  // ---- helpers ----
+  let leaveLatch = false; // ポップアップ中 leave 固定
+
   const xyOfIndex = (idx) => [idx % 8, Math.floor(idx / 8)];
   const posCenter = (x, y) => {
-    // convert [0..7] to px center inside #stones / #legals area
     const cs = parseFloat(getComputedStyle(document.documentElement).getPropertyValue('--cell-size'));
     const gp = parseFloat(getComputedStyle(document.documentElement).getPropertyValue('--cell-gap'));
     const xpx = x * (cs + gp) + cs / 2;
@@ -42,7 +39,6 @@
     hud.watchers.textContent = String(snap.watchers ?? 0);
   }
 
-  // ---- draw board grid once ----
   function buildGrid() {
     gridEl.innerHTML = '';
     for (let i = 0; i < 64; i++) {
@@ -52,7 +48,6 @@
     }
   }
 
-  // ---- draw stones ----
   function drawStones(board) {
     stonesEl.innerHTML = '';
     board.forEach((row, y) => {
@@ -69,10 +64,9 @@
     });
   }
 
-  // ---- draw legal marks (only when my turn) ----
   function drawLegals(legal) {
     legalsEl.innerHTML = '';
-    if (!turn || seat !== turn) return;       // ← 自分の手番だけ表示
+    if (!turn || seat !== turn) return;
     for (const p of legal || []) {
       const x = p.charCodeAt(0) - 97;
       const y = parseInt(p.slice(1), 10) - 1;
@@ -85,7 +79,6 @@
     }
   }
 
-  // ---- board click → move (only when my turn & legal) ----
   stonesEl.parentElement.addEventListener('click', async (ev) => {
     if (!turn || seat !== turn) return;
     const rect = stonesEl.getBoundingClientRect();
@@ -97,41 +90,40 @@
     const y = Math.floor(yrel / (cs + gp));
     const pos = String.fromCharCode(97 + x) + (y + 1);
 
-    // 送信
     if (!token) return;
     await fetch('/api/move', {
       method: 'POST',
       headers: { 'content-type': 'application/json', 'X-Play-Token': token },
       body: JSON.stringify({ room, pos })
     }).catch(()=>{});
-    // ハイライトはサーバーからの新スナップショット到着で更新/消去
   });
 
-  // ---- SSE ----
   function openSSE() {
     if (sse) sse.close();
     const u = new URL('/sse', location.origin);
     u.searchParams.set('room', String(room));
     u.searchParams.set('seat', seat);
     u.searchParams.set('sse', sseId);
-    sse = new EventSource(u, { withCredentials: false });
+    sse = new EventSource(u);
 
     sse.addEventListener('room_state', (e) => {
       const snap = JSON.parse(e.data);
+      if (leaveLatch) {
+        snap.status = 'leave'; // モーダル中は強制 leave 表示
+      }
       status = snap.status;
       turn = snap.turn;
       setHUD(snap);
       drawStones(snap.board.stones);
       drawLegals(snap.legal);
-      // 退出検知 → ポップアップ（leave→waitingの流れはサーバーからの状態で反映）
-      if (snap.status === 'leave' && seat !== 'observer') {
-        showModal(msg('opponent_left'));
+
+      // opponent-left detection
+      if (!leaveLatch && snap.status === 'leave' && seat !== 'observer') {
+        showModal('対戦相手が退出しました。');
       }
     });
-    sse.onerror = () => { /* keep-alive handled server-side */ };
   }
 
-  // ---- join → then open SSE (avoid counting as watcher) ----
   async function join() {
     const body = { action: 'join', room, seat: wantSeat, sse: sseId };
     const res = await fetch('/api/action', {
@@ -149,24 +141,22 @@
     drawStones(snap.board.stones);
     drawLegals(snap.legal);
 
-    openSSE();  // ← join 成功後に seat 付きで接続
+    openSSE();
   }
 
-  // ---- modal ----
   const modal = q('#modal-backdrop');
   const modalMsg = q('#modal-msg');
-  q('#modal-ok').onclick = () => hideModal();
-  function showModal(text){ modalMsg.textContent = text; modal.style.display = 'flex'; }
+  q('#modal-ok').onclick = () => {
+    hideModal();
+    leaveLatch = false;
+    status = 'waiting'; // 強制 waiting に戻す
+    setHUD({room, status, turn, watchers:0});
+  };
+  function showModal(text){ modalMsg.textContent = text; modal.style.display = 'flex'; leaveLatch = true; }
   function hideModal(){ modal.style.display = 'none'; }
-  function msg(key){
-    // 簡易 i18n（既存の system_messages.json を使うならここで差し替え）
-    if (key === 'opponent_left') return '対戦相手が退出しました。';
-    return '';
-  }
 
-  // ---- leave ----
   lobbyLink.onclick = async () => {
-    if (sse) { sse.close(); sse = null; }               // 先に SSE を閉じる
+    if (sse) { sse.close(); sse = null; }
     await fetch('/api/action', {
       method: 'POST',
       headers: { 'content-type': 'application/json', 'X-Play-Token': token },
@@ -175,6 +165,5 @@
     location.href = '/';
   };
 
-  // ---- start ----
   (async () => { await join(); })();
 })();
