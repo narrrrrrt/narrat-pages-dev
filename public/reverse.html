@@ -2,9 +2,9 @@
 <html lang="en">
 <head>
   <meta charset="utf-8" />
-  <meta name="viewport" content="width=device-width,initial-scale=1" />
-  <title>Reversi 0.9c</title>
-  <link rel="stylesheet" href="/reverse.css" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Reversi 0.9d</title>
+  <link rel="stylesheet" href="/css/reverse.css" />
 </head>
 <body>
   <header class="hud">
@@ -13,12 +13,12 @@
     <div class="badge">Turn: <span id="hud-turn">-</span></div>
     <div class="badge">Status: <span id="hud-status">-</span></div>
     <div class="badge">Watchers: <span id="hud-watchers">0</span></div>
-    <a id="to-lobby" class="link">Lobby</a>
+    <a id="lobby" class="link">Lobby</a>
   </header>
 
   <main class="stage">
     <div id="board-wrap">
-      <!-- 星（ドット）オーバーレイ：中央4×4の四隅だけ -->
+      <!-- 星（ドット）オーバーレイ：中央4x4の四隅に配置 -->
       <div class="board-stars">
         <div class="star" style="--x:25%; --y:25%;"></div>
         <div class="star" style="--x:75%; --y:25%;"></div>
@@ -39,6 +39,6 @@
     </div>
   </div>
 
-  <script src="/reverse.js" defer></script>
+  <script src="/js/reverse.js" defer></script>
 </body>
 </html>
