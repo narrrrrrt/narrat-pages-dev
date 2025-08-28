@@ -37,7 +37,7 @@ function cloneBoard(b:string[]): string[] { return b.slice(); }
 
 function posToXY(pos:string): [number,number] {
   const col = pos[0].toLowerCase().charCodeAt(0) - 97;
-  const row = parseInt(pos.slice(1),10) - 1;
+  const row = parseInt(pos.slice(1),10) -  1;
   return [col,row];
 }
 
@@ -96,9 +96,9 @@ function countBW(board:string[]): {B:number,W:number}{
 
 const tokShort = (t?:string)=> t ? `${t.slice(0,2)}******` : '';
 
-// --- 構造化ログ（printf置換の不安定さ回避） ---
+// --- 構造化ログ ---
 const slog = (type: string, fields: Record<string, any> = {}) => {
-  try { console.log(JSON.stringify({ type, t: Date.now(), ...fields })); } catch { /* ignore */ }
+  try { console.log(JSON.stringify({ type, t: Date.now(), ...fields })); } catch {}
 };
 
 export class ReversiHub {
@@ -295,13 +295,31 @@ export class ReversiHub {
     const pos: string = (body.pos || '').toLowerCase();
     const r = this.rooms.get(room)!;
 
+    // ここから"必ず何か出る"系ログ
     const info = this.tokenMap.get(token);
-    if (!info || info.room!==room) return json({error:'unauthorized'}, 403);
-    if (r.status!=='playing' || !r.turn) return json(this.snapshot(room));
+    slog('MOVE_ATTEMPT', {
+      room, pos, token: tokShort(token),
+      haveInfo: !!info, status: r.status, turn: r.turn
+    });
 
-    if (info.seat !== r.turn) return json(this.snapshot(room));
+    if (!info || info.room!==room) {
+      slog('MOVE_REJECT', { room, pos, reason:'unauthorized-or-room-mismatch' });
+      return json({error:'unauthorized'}, 403);
+    }
+    if (r.status!=='playing' || !r.turn) {
+      slog('MOVE_REJECT', { room, pos, reason:'not-playing-or-no-turn' });
+      return json(this.snapshot(room));
+    }
+    if (info.seat !== r.turn) {
+      slog('MOVE_REJECT', { room, pos, reason:'not-your-turn', player: info.seat, turn: r.turn });
+      return json(this.snapshot(room));
+    }
+
     const legals = legalMoves(r.board, r.turn);
-    if (!legals.includes(pos)) return json(this.snapshot(room));
+    if (!legals.includes(pos)) {
+      slog('MOVE_REJECT', { room, pos, reason:'illegal', legals });
+      return json(this.snapshot(room));
+    }
 
     r.board = applyMove(r.board, pos, r.turn);
     const next = r.turn==='black' ? 'white' : 'black';
