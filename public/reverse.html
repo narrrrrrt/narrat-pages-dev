@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>Reversi 0.9f</title>
+  <title>Reversi 0.9g</title>
   <link rel="stylesheet" href="/css/reverse.css" />
 </head>
 <body>
@@ -19,15 +19,17 @@
   <main class="stage">
     <div id="board-wrap">
       <div id="board" class="board" aria-label="reversi board">
-        <div id="grid" class="grid" aria-hidden="true"></div>
+        <div id="grid" class="grid"></div>
+        <div id="stones"></div>
+        <div id="legals"></div>
       </div>
     </div>
   </main>
 
   <!-- opponent-left モーダル -->
-  <div id="modal-backdrop" class="modal-backdrop" hidden>
-    <div class="modal" role="dialog" aria-modal="true" aria-labelledby="modal-text">
-      <p id="modal-text" class="msg"></p>
+  <div id="modal-backdrop" class="modal-backdrop" aria-hidden="true">
+    <div class="modal" role="dialog" aria-modal="true">
+      <p class="msg" id="modal-msg"></p>
       <div class="row">
         <button id="modal-ok" class="btn">OK</button>
       </div>
