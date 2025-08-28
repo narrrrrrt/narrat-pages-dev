@@ -1,4 +1,4 @@
-// workers/do-worker/worker.ts  v0.7
+// workers/do-worker/worker.ts  v0.8
 export interface Env {
   REVERSI_HUB: DurableObjectNamespace;
   LOG_BUCKET?: R2Bucket; // あっても使わない（R2保存はPages側ミドルでやる）
@@ -35,6 +35,9 @@ function initialBoard(): string[] {
   const set = (x:number,y:number,ch:string) => { const r = rows[y].split(''); r[x]=ch; rows[y]=r.join(''); };
   set(3,3,'W'); set(4,4,'W'); set(3,4,'B'); set(4,3,'B');
   return rows;
+}
+function zeroBoard(): string[] {
+  return Array.from({length:8}, _ => '--------');
 }
 function posToXY(pos:string): [number,number] {
   const col = pos[0].toLowerCase().charCodeAt(0) - 97;
@@ -102,7 +105,7 @@ const ALLOW = new Set<string>((
   (globalThis as any).LOG_TYPES || 'MOVE_FIRST_BLACK,MOVE_FIRST_WHITE,LEAVE_BLACK,LEAVE_WHITE'
 ).split(',').map(s=>s.trim()).filter(Boolean));
 
-// v0.7: 共通フィールド log="REVERSI" を付与（ダッシュボードで log=REVERSI で一発フィルタ）
+// 共通フィールド log="REVERSI" を付与（ダッシュボードで log=REVERSI で一発フィルタ）
 const slog = (type: string, fields: Record<string, any> = {}) => {
   if (!ALLOW.has(type)) return;
   try {
@@ -232,7 +235,7 @@ export class ReversiHub {
         else if (sseId){
           const info = this.findBySseId(sseId);
           if (info && info.room===room) {
-            this.leaveByTokenInfo(info); // 内部で LEAVE_* を出す
+            this.leaveByTokenInfo(info); // 内部で LEAVE_* と leave配信
           }
         }
         slog('SSE_ROOM_DEL', { room, seat, total: this.roomClients.get(room)!.size });
@@ -261,7 +264,16 @@ export class ReversiHub {
           if (wantSeat==='black') r.black = token; else r.white = token;
           this.tokenMap.set(token, { room, seat: wantSeat, sseId });
           if (sseId) this.sseMap.set(sseId, { room, seat: wantSeat });
-          if (r.black && r.white){ r.status='playing'; r.turn='black'; }
+
+          // ★ 両者が揃った瞬間に初期化して再開（leave からの復帰含む）
+          if (r.black && r.white){
+            r.board = initialBoard();
+            r.status='playing';
+            r.turn='black';
+            r.firstMoveLoggedBlack = false;
+            r.firstMoveLoggedWhite = false;
+          }
+
           slog('JOIN', { room, seat: wantSeat, token: tokShort(token), seats:{B:!!r.black,W:!!r.white}, status:r.status, turn:r.turn });
         } else {
           seat = 'observer';
@@ -297,7 +309,8 @@ export class ReversiHub {
     return new Response('Bad Request', {status:400});
   }
 
-  // v0.6+: 離脱時ログはここで一元出力（LEAVE_BLACK / LEAVE_WHITE）
+  // v0.8: 片側が抜けたら status='leave' + ゼロ盤面 + turn=null を即配信
+  //       両者不在になったら waiting + 初期盤面に戻す
   leaveByTokenInfo(info:TokenInfo){
     const r = this.rooms.get(info.room)!;
 
@@ -310,14 +323,25 @@ export class ReversiHub {
       this.tokenMap.delete(r.white); r.white=undefined;
     }
 
-    // 盤面とフラグを初期化
-    r.board = initialBoard(); r.turn=null; r.status='waiting';
-    r.firstMoveLoggedBlack = false;
-    r.firstMoveLoggedWhite = false;
-
     // sseId 紐付きも掃除
     for (const [k,v] of Array.from(this.sseMap.entries()))
       if (v.room===info.room && v.seat===info.seat) this.sseMap.delete(k);
+
+    if (!r.black && !r.white){
+      // 誰もいなくなったら waiting に戻す（ロビー表示安定のため）
+      r.board = initialBoard();
+      r.turn = null;
+      r.status = 'waiting';
+      r.firstMoveLoggedBlack = false;
+      r.firstMoveLoggedWhite = false;
+    } else {
+      // 片側が残っている → leave + ゼロ盤面
+      r.board = zeroBoard();
+      r.turn = null;
+      r.status = 'leave';
+      r.firstMoveLoggedBlack = false;
+      r.firstMoveLoggedWhite = false;
+    }
 
     this.broadcastLobby(); this.broadcastRoom(info.room);
   }
