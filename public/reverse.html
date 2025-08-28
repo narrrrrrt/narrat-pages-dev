@@ -1,190 +1,210 @@
 <!doctype html>
 <html lang="en">
 <head>
-  <meta charset="utf-8" />
-  <meta name="viewport" content="width=device-width,initial-scale=1" />
-  <title>Reversi</title>
-  <link rel="stylesheet" href="/reverse.css" />
+  <meta charset="utf-8">
+  <title>Reversi Room</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <!-- 既存の reverse.css があればそれを使う。モーダル最小スタイルは内蔵 -->
+  <link rel="stylesheet" href="/reverse.css">
   <style>
-    header { display:flex; align-items:center; justify-content:space-between; padding:12px 16px; font-weight:600; }
-    header .meta { font-weight:400; font-size:14px; opacity:.9 }
-    #board { width:min(92vw,560px); margin:24px auto; }
-    #toLobby { margin-left:16px; font-size:14px; }
-    .row { display:flex; }
-    .cell { position:relative; width:48px; height:48px; margin:2px; border-radius:8px; border:1px solid #0b0b0b; background:#2c7a2c; outline:none; cursor:pointer; }
-    .cell[data-stone="white"]::after, .cell[data-stone="black"]::after { content:""; position:absolute; inset:20%; border-radius:50%; box-shadow: inset 0 0 4px rgba(0,0,0,.6); }
-    .cell[data-stone="white"]::after { background:#eee; }
-    .cell[data-stone="black"]::after { background:#111; }
-    .cell[data-legal="1"]::before { content:""; position:absolute; inset:40%; border-radius:50%; border:2px solid #eee; box-shadow:0 0 0 1px #000; }
-    .debug { max-width:min(92vw,560px); margin: 8px auto 24px; padding: 10px 12px; border:1px solid #e2e8f0; border-radius:10px; background:#fbfdff; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; color:#223; font-size:12px; }
-    .debug pre { white-space: pre-wrap; word-break: break-word; margin:6px 0 0; line-height:1.35; }
+    /* 最小限のモーダル（reverse.css に既にあればこちらは無視されてOK） */
+    .modal-backdrop{position:fixed;inset:0;background:rgba(0,0,0,.5);display:none;align-items:center;justify-content:center;z-index:9999;}
+    .modal{background:#fff;max-width:420px;width:90%;border-radius:8px;box-shadow:0 8px 30px rgba(0,0,0,.2);padding:20px;}
+    .modal h3{margin:0 0 12px;font-size:18px}
+    .modal p{margin:0 0 16px}
+    .modal .actions{display:flex;justify-content:flex-end;gap:8px}
+    .btn{padding:.5rem .9rem;border:1px solid #ddd;border-radius:6px;background:#f6f6f6;cursor:pointer}
+    .btn.primary{background:#111;color:#fff;border-color:#111}
+    .board{display:grid;grid-template-columns:repeat(8,40px);grid-template-rows:repeat(8,40px);gap:2px;user-select:none}
+    .cell{width:40px;height:40px;background:#0a7a3e;display:flex;align-items:center;justify-content:center;cursor:pointer}
+    .cell.disabled{cursor:not-allowed;opacity:.6}
+    .stone{width:30px;height:30px;border-radius:50%}
+    .stone.black{background:#111}
+    .stone.white{background:#eee;border:1px solid #999}
+    .legal{outline:2px dashed #fff;outline-offset:-6px}
+    .hud{display:flex;gap:16px;align-items:center;margin:12px 0}
+    .indicator{padding:.25rem .5rem;border:1px solid #ddd;border-radius:6px}
+    .muted{opacity:.6}
+    a.lobby{margin-left:auto}
   </style>
 </head>
 <body>
-  <header>
-    <div style="font-size:28px;">Reversi</div>
-    <div class="meta" id="meta">–</div>
-  </header>
+  <div class="hud">
+    <div id="roomLabel" class="indicator"></div>
+    <div id="seatLabel" class="indicator"></div>
+    <div id="turnLabel" class="indicator"></div>
+    <div id="statusLabel" class="indicator"></div>
+    <div id="watchersLabel" class="indicator"></div>
+    <a class="lobby btn" href="#" id="toLobby">Lobby</a>
+  </div>
 
-  <main><div id="board"></div></main>
-  <nav style="text-align:center;margin:8px 0 8px;">
-    <a href="#" id="toLobby">Lobby</a>
-  </nav>
+  <div id="board" class="board" aria-label="Reversi board"></div>
 
-  <div class="debug" id="debugBox">
-    <div><strong>Debug (room stream)</strong> -- source: <code id="dbgSrc">/?room=?</code></div>
-    <div id="dbgMeta">–</div>
-    <pre id="dbgJson">–</pre>
+  <!-- ポップアップ（相手退出） -->
+  <div id="leaveModal" class="modal-backdrop" role="dialog" aria-modal="true" aria-labelledby="leaveTitle">
+    <div class="modal">
+      <h3 id="leaveTitle">Notice</h3>
+      <p id="leaveMsg">Your opponent has left the room.</p>
+      <div class="actions">
+        <button id="leaveOk" class="btn primary">OK</button>
+      </div>
+    </div>
   </div>
 
   <script>
-  (() => {
-    const params = new URLSearchParams(location.search);
-    const room = parseInt(params.get('room') || '1', 10);
-    const wantSeat = (params.get('seat') || 'observer').toLowerCase();
-    const sseId = (crypto && crypto.randomUUID ? crypto.randomUUID() : Math.random().toString(36).slice(2));
+  (function(){
+    const qs = new URL(location.href).searchParams;
+    const room = Math.max(1, Math.min(4, parseInt(qs.get('room')||'1', 10)));
+    const wantSeat = (qs.get('seat')||'observer');
+    const seat = (wantSeat==='black'||wantSeat==='white') ? wantSeat : 'observer';
 
-    const metaEl = document.getElementById('meta');
-    const boardEl = document.getElementById('board');
-    const dbgSrc = document.getElementById('dbgSrc');
-    const dbgMeta = document.getElementById('dbgMeta');
-    const dbgJson = document.getElementById('dbgJson');
+    const elBoard = document.getElementById('board');
+    const elRoom = document.getElementById('roomLabel');
+    const elSeat = document.getElementById('seatLabel');
+    const elTurn = document.getElementById('turnLabel');
+    const elStatus = document.getElementById('statusLabel');
+    const elWatchers = document.getElementById('watchersLabel');
+    const elLobby = document.getElementById('toLobby');
 
-    let playToken = sessionStorage.getItem('X-Play-Token') || '';
-    let mySeat = 'observer';
-    let snapshot = null;
-    let eventCount = 0;
+    const modal = document.getElementById('leaveModal');
+    const leaveOk = document.getElementById('leaveOk');
+    const leaveMsg = document.getElementById('leaveMsg');
+    const leaveTitle = document.getElementById('leaveTitle');
 
-    const SIZE = 8;
+    let token = '';
+    let current = null; // 最新スナップショット
+    let opponentPopupShown = false;
+    const sseId = Math.random().toString(36).slice(2,10);
 
-    function mapStoneCharToName(ch){ if (ch === 'W') return 'white'; if (ch === 'B') return 'black'; return ''; }
-
-    function renderBoard(snap){
-      if (!boardEl.dataset.wired) {
-        boardEl.innerHTML = '';
-        for (let y=0; y<SIZE; y++){
-          const row = document.createElement('div');
-          row.className = 'row';
-          for (let x=0; x<SIZE; x++){
-            const cell = document.createElement('button');
-            cell.className = 'cell'; cell.dataset.x = x; cell.dataset.y = y;
-            cell.addEventListener('click', onCellClick);
-            row.appendChild(cell);
-          }
-          boardEl.appendChild(row);
-        }
-        boardEl.dataset.wired = '1';
+    // i18n 最小：system_messages.json から opponent_left を読む（失敗時は英語）
+    let i18n = { opponent_left: 'Your opponent has left the room.' };
+    fetch('/i18n/system_messages.json').then(r=>r.json()).then(j=>{
+      const lang = (navigator.language||'en').slice(0,2);
+      if (j?.opponent_left && (j.opponent_left[lang] || j.opponent_left['en'])) {
+        i18n.opponent_left = j.opponent_left[lang] || j.opponent_left['en'];
       }
-      const stones = snap.board.stones;
-      const legalSet = new Set((snap.legal||[]).map(s=>s.toLowerCase()));
-      const xyToPos = (x,y)=> String.fromCharCode(97+x) + (y+1);
+      leaveMsg.textContent = i18n.opponent_left;
+      leaveTitle.textContent = 'Notice';
+    }).catch(()=>{ /* noop */ });
 
-      for (let y=0; y<SIZE; y++){
-        for (let x=0; x<SIZE; x++){
-          const cell = boardEl.children[y].children[x];
+    function setHUD(snap){
+      elRoom.textContent = `Room ${snap.room}`;
+      elSeat.textContent = `Seat: ${seat}`;
+      const turnSymbol = snap.turn === 'black' ? '●' : snap.turn === 'white' ? '○' : '–';
+      elTurn.textContent = `Turn: ${turnSymbol}`;
+      elStatus.textContent = `Status: ${snap.status}`;
+      elWatchers.textContent = `Watchers: ${snap.watchers}`;
+    }
+
+    function renderBoard(stones, legal=[], disabled=false){
+      elBoard.innerHTML = '';
+      for (let y=0; y<8; y++){
+        for (let x=0; x<8; x++){
+          const idx = y*8 + x;
+          const cell = document.createElement('div');
+          cell.className = 'cell';
+          if (disabled) cell.classList.add('disabled');
           const ch = stones[y][x];
-          const name = mapStoneCharToName(ch);
-          if (name) cell.setAttribute('data-stone', name); else cell.removeAttribute('data-stone');
-
-          const pos = xyToPos(x,y);
-          const canPlay = legalSet.has(pos) && (mySeat === snap.turn);
-          cell.setAttribute('data-legal', canPlay ? '1':'0');
+          if (ch === 'B' || ch === 'W'){
+            const st = document.createElement('div');
+            st.className = 'stone ' + (ch==='B' ? 'black' : 'white');
+            cell.appendChild(st);
+          } else {
+            const pos = String.fromCharCode(97+x)+(y+1);
+            if (legal.includes(pos) && !disabled){
+              cell.classList.add('legal');
+              cell.addEventListener('click', ()=>move(pos));
+            }
+          }
+          elBoard.appendChild(cell);
         }
       }
-      renderHeader(snap);
-    }
-
-    function renderHeader(snap){
-      const seats = `Seats: Black ${snap.seats && snap.seats.black ? '✓':'–'} / White ${snap.seats && snap.seats.white ? '✓':'–'}`;
-      const turn  = `Turn: ${snap.turn==='black'?'●':snap.turn==='white'?'○':'–'}`;
-      const stat  = `Status: ${snap.status || 'waiting'}`;
-      const watch = `Watching: ${snap.watchers ?? 0}`;
-      const mine  = `You: ${mySeat}`;
-      metaEl.textContent = [seats, turn, stat, watch, mine].join('   ');
-    }
-
-    function updateDebug(snap, note=''){
-      eventCount++;
-      dbgMeta.textContent = `events=${eventCount}  note=${note}  ts=${new Date().toLocaleTimeString()}  seat=${mySeat}  turn=${snap.turn}`;
-      dbgJson.textContent = JSON.stringify(snap, null, 2);
-      console.debug('[room_state]', {eventCount, mySeat, snap});
     }
 
     async function join(){
       const res = await fetch('/api/action', {
         method:'POST',
-        headers: { 'Content-Type':'application/json' },
-        body: JSON.stringify({ action:'join', room, seat: wantSeat, sse: sseId })
+        headers:{'Content-Type':'application/json'},
+        body: JSON.stringify({ action:'join', room, seat, sse: sseId })
       });
-      playToken = res.headers.get('X-Play-Token') || '';
-      if (playToken) sessionStorage.setItem('X-Play-Token', playToken);
-      snapshot = await res.json();
-      mySeat = snapshot.seat || snapshot.mySeat || wantSeat;
-      renderBoard(snapshot);
-      updateDebug(snapshot, 'after join');
+      token = res.headers.get('X-Play-Token') || token;
+      const snap = await res.json();
+      current = snap;
+      setHUD(snap);
+      const disabled = !(seat==='black' || seat==='white') || snap.status!=='playing' || snap.turn!==seat;
+      renderBoard(snap.board.stones, (seat==='black'||seat==='white') ? snap.legal||[] : [], disabled);
     }
 
     async function leave(){
-      const body = JSON.stringify({ action:'leave', room, sse: sseId });
-      try{
-        await fetch('/api/action', {
-          method:'POST', keepalive:true,
-          headers: { 'Content-Type':'application/json', 'X-Play-Token': playToken || '' },
-          body
-        });
-      }catch(_){}
-      try{
-        const blob = new Blob([body], {type:'application/json'});
-        navigator.sendBeacon && navigator.sendBeacon('/api/action', blob);
-      }catch(_){}
+      // 自席退室（トークンがあれば送る）
+      await fetch('/api/action', {
+        method:'POST',
+        headers:{'Content-Type':'application/json', ...(token? {'X-Play-Token':token} : {})},
+        body: JSON.stringify({ action:'leave', room })
+      }).catch(()=>{});
     }
 
-    async function onCellClick(e){
-      const cell = e.currentTarget;
-      if (cell.getAttribute('data-legal') !== '1') return;
-      const x = parseInt(cell.dataset.x,10), y = parseInt(cell.dataset.y,10);
-      const pos = String.fromCharCode(97+x) + (y+1);
+    async function move(pos){
+      if (!token) return;
       const res = await fetch('/api/move', {
         method:'POST',
-        headers: { 'Content-Type':'application/json', 'X-Play-Token': playToken || '' },
-        body: JSON.stringify({ room, pos })
+        headers:{'Content-Type':'application/json','X-Play-Token':token},
+        body: JSON.stringify({ room, pos, seat })
       });
       const snap = await res.json();
-      snapshot = snap;
-      renderBoard(snapshot);
-      updateDebug(snapshot, `played ${pos}`);
+      current = snap;
+      setHUD(snap);
+      const disabled = !(seat==='black' || seat==='white') || snap.status!=='playing' || snap.turn!==seat;
+      renderBoard(snap.board.stones, (seat==='black'||seat==='white') ? snap.legal||[] : [], disabled);
     }
 
-    // ★ ルームSSEを /?room=... に戻す
-    let es = null;
-    function openSSE(){
-      if (es) es.close();
-      const url = `/?room=${room}&seat=${mySeat}&sse=${encodeURIComponent(sseId)}`;
-      dbgSrc.textContent = url;
-      es = new EventSource(url);
-      es.addEventListener('room_state', (ev) => {
-        try{
-          const snap = JSON.parse(ev.data);
-          snapshot = snap;
-          if (snap.seat && snap.seat !== mySeat) mySeat = snap.seat; // 観戦fallback等
-          renderBoard(snapshot);
-          updateDebug(snapshot, 'stream');
-        }catch(err){ console.warn('bad event', err); }
-      });
-      es.onerror = () => { updateDebug(snapshot || {status:'unknown'}, 'sse error'); };
-    }
-
-    document.getElementById('toLobby').addEventListener('click', async (e) => {
+    // 「ロビーへ」ボタン
+    elLobby.addEventListener('click', async (e)=>{
       e.preventDefault();
       await leave();
       location.href = '/index.html';
     });
-    window.addEventListener('pagehide', leave);
 
-    (async function boot(){
-      await join();
-      openSSE();
-    })();
+    // 相手離脱モーダル（OKで閉じるだけ。通信なし）
+    leaveOk.addEventListener('click', ()=>{
+      modal.style.display='none';
+    });
+
+    // SSE
+    const es = new EventSource(`/sse?room=${room}&seat=${seat}&sse=${sseId}`);
+    es.addEventListener('room_state', (ev)=>{
+      const snap = JSON.parse(ev.data);
+      current = snap;
+      setHUD(snap);
+
+      // status: leave → ゼロ盤面表示 + 一度だけポップアップ
+      if (snap.status === 'leave'){
+        const disabled = true; // クリック不可
+        // サーバからもゼロが来る設計だが、保険でゼロ描画
+        const zero = Array.from({length:8}, _=>'--------');
+        renderBoard(zero, [], disabled);
+
+        if ((seat==='black' || seat==='white') && !opponentPopupShown){
+          opponentPopupShown = true;
+          modal.style.display = 'flex';
+          // OK を押した後は部屋に残っても良い（仕様）ので何もしない
+        }
+        return;
+      }
+
+      // 通常描画
+      const disabled = !(seat==='black' || seat==='white') || snap.status!=='playing' || snap.turn!==seat;
+      const legal = (seat==='black'||seat==='white') ? (snap.legal||[]) : [];
+      renderBoard(snap.board.stones, legal, disabled);
+
+      // 再開したら次の leave のためにフラグを戻す
+      if (snap.status === 'playing') opponentPopupShown = false;
+    });
+
+    es.addEventListener('ping', ()=>{/* noop */});
+
+    // 初回 join
+    join().catch(console.error);
   })();
   </script>
 </body>
