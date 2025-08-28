@@ -1,4 +1,4 @@
-// workers/do-worker/worker.ts  v0.6
+// workers/do-worker/worker.ts  v0.7
 export interface Env {
   REVERSI_HUB: DurableObjectNamespace;
   LOG_BUCKET?: R2Bucket; // あっても使わない（R2保存はPages側ミドルでやる）
@@ -22,7 +22,7 @@ type RoomState = {
   board: string[];
   turn: Turn;
   status: Status;
-  // v0.6: 各色の「最初の一手」ログ済みフラグ
+  // v0.6+: 各色の「最初の一手」ログ済みフラグ
   firstMoveLoggedBlack: boolean;
   firstMoveLoggedWhite: boolean;
 };
@@ -97,14 +97,22 @@ function countBW(board:string[]): {B:number,W:number}{
 // ---- ログユーティリティ ----
 const tokShort = (t?:string)=> t ? `${t.slice(0,2)}******` : '';
 
-// 許可するログタイプ（環境変数 LOG_TYPES が無ければ v0.6 既定を採用）
+// 許可するログタイプ（環境変数 LOG_TYPES が無ければ v0.7 既定）
 const ALLOW = new Set<string>((
   (globalThis as any).LOG_TYPES || 'MOVE_FIRST_BLACK,MOVE_FIRST_WHITE,LEAVE_BLACK,LEAVE_WHITE'
 ).split(',').map(s=>s.trim()).filter(Boolean));
 
+// v0.7: 共通フィールド log="REVERSI" を付与（ダッシュボードで log=REVERSI で一発フィルタ）
 const slog = (type: string, fields: Record<string, any> = {}) => {
   if (!ALLOW.has(type)) return;
-  try { console.log(JSON.stringify({ type, t: Date.now(), ...fields })); } catch {}
+  try {
+    console.log(JSON.stringify({
+      log: 'REVERSI',
+      type,
+      t: Date.now(),
+      ...fields
+    }));
+  } catch {}
 };
 
 export class ReversiHub {
@@ -176,7 +184,6 @@ export class ReversiHub {
     if (url.pathname==='/move'   && req.method==='POST') return this.handleMove(req);
     if (url.pathname==='/admin'  && req.method==='POST') {
       for (const n of [1,2,3,4]) this.rooms.set(n, this.newRoom());
-      // （v0.6は管理ログを既定で抑制：必要時は LOG_TYPES に ADMIN_RESET を追加）
       slog('ADMIN_RESET', {});
       this.broadcastLobby(); for (const n of [1,2,3,4]) this.broadcastRoom(n);
       return json({ok:true});
@@ -225,8 +232,7 @@ export class ReversiHub {
         else if (sseId){
           const info = this.findBySseId(sseId);
           if (info && info.room===room) {
-            // onclose経由の離脱も LEAVE_* を出す（集中管理のため leaveByTokenInfo 内で出力）
-            this.leaveByTokenInfo(info);
+            this.leaveByTokenInfo(info); // 内部で LEAVE_* を出す
           }
         }
         slog('SSE_ROOM_DEL', { room, seat, total: this.roomClients.get(room)!.size });
@@ -256,7 +262,6 @@ export class ReversiHub {
           this.tokenMap.set(token, { room, seat: wantSeat, sseId });
           if (sseId) this.sseMap.set(sseId, { room, seat: wantSeat });
           if (r.black && r.white){ r.status='playing'; r.turn='black'; }
-          // JOIN ログは既定では抑制（必要なら LOG_TYPES に JOIN を追加）
           slog('JOIN', { room, seat: wantSeat, token: tokShort(token), seats:{B:!!r.black,W:!!r.white}, status:r.status, turn:r.turn });
         } else {
           seat = 'observer';
@@ -292,7 +297,7 @@ export class ReversiHub {
     return new Response('Bad Request', {status:400});
   }
 
-  // v0.6: 離脱時のログはここで一元出力（LEAVE_BLACK / LEAVE_WHITE）
+  // v0.6+: 離脱時ログはここで一元出力（LEAVE_BLACK / LEAVE_WHITE）
   leaveByTokenInfo(info:TokenInfo){
     const r = this.rooms.get(info.room)!;
 
@@ -337,7 +342,7 @@ export class ReversiHub {
     // 着手
     r.board = applyMove(r.board, pos, r.turn);
 
-    // v0.6: 各色の「最初の一手」だけ MOVE_FIRST_* を出す
+    // 各色の「最初の一手」だけ MOVE_FIRST_* を出す
     if (info.seat==='black' && !r.firstMoveLoggedBlack) {
       r.firstMoveLoggedBlack = true;
       slog('MOVE_FIRST_BLACK', { room, pos });
