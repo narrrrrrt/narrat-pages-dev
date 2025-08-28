@@ -4,274 +4,41 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width,initial-scale=1" />
   <title>Reversi</title>
-  <link rel="stylesheet" href="/style.css" />
-  <style>
-    /* v0.9: 既存CSSに依存しつつ、モーダルの最低限だけ補強（重複しても害なし） */
-    .modal {
-      position: fixed; inset: 0;
-      display: none; align-items: center; justify-content: center;
-      background: rgba(0,0,0,.45); z-index: 2000;
-    }
-    .modal.show { display: flex; }
-    .modal-box {
-      background: #fff; color: #111; min-width: 280px; max-width: 90vw;
-      border-radius: 12px; padding: 20px; box-shadow: 0 6px 28px rgba(0,0,0,.25);
-    }
-    .modal-actions { margin-top: 16px; text-align: right; }
-    .modal-actions .btn { min-width: 88px; }
-    .info-bar { display:flex; gap:12px; flex-wrap:wrap; margin-bottom: 12px; }
-    .pill { border: 1px solid #444; border-radius: 10px; padding: 8px 10px; min-width: 92px; text-align: center; }
-    .link { text-decoration: underline; cursor: pointer; }
-    /* 盤面は既存の style.css を使用。必要最小限の補強だけ */
-    #board { margin: 0 auto; touch-action: manipulation; }
-  </style>
+  <link rel="stylesheet" href="/reverse.css" />
 </head>
 <body>
-  <h1>Reversi</h1>
+  <header class="hud">
+    <div class="badge">Room <span id="hud-room">-</span></div>
+    <div class="badge">Seat: <span id="hud-seat">-</span></div>
+    <div class="badge">Turn: <span id="hud-turn">-</span></div>
+    <div class="badge">Status: <span id="hud-status">-</span></div>
+    <div class="badge">Watchers: <span id="hud-watchers">0</span></div>
+    <a id="to-lobby" class="link">Lobby</a>
+  </header>
 
-  <div class="info-bar">
-    <div class="pill" id="roomBox">Room <span id="roomNo">?</span></div>
-    <div class="pill">Seat: <span id="seatMe">observer</span></div>
-    <div class="pill">Turn: <span id="turnNow">–</span></div>
-    <div class="pill">Status: <span id="statusNow">waiting</span></div>
-    <div class="pill">Watchers: <span id="watchers">0</span></div>
-    <div class="pill link"><a id="lobbyLink" href="/index.html">Lobby</a></div>
-  </div>
+  <main class="stage">
+    <div id="board-wrap">
+      <!-- 星（ドット）オーバーレイ：中央4×4の四隅だけ -->
+      <div class="board-stars">
+        <div class="star" style="--x:25%; --y:25%;"></div>
+        <div class="star" style="--x:75%; --y:25%;"></div>
+        <div class="star" style="--x:25%; --y:75%;"></div>
+        <div class="star" style="--x:75%; --y:75%;"></div>
+      </div>
+      <div id="board" class="board" aria-label="reversi board"></div>
+    </div>
+  </main>
 
-  <div id="board"></div>
-
-  <!-- v0.9: 相手退出モーダル（i18nテキストを必ず注入） -->
-  <div id="opponentModal" class="modal" aria-hidden="true">
-    <div class="modal-box" role="dialog" aria-modal="true" aria-labelledby="opMsg">
-      <div id="opMsg" style="white-space:pre-wrap; line-height:1.5;"></div>
+  <!-- opponent-left モーダル -->
+  <div id="modal" class="modal" role="dialog" aria-modal="true" aria-labelledby="modal-text">
+    <div class="modal-box">
+      <div id="modal-text"></div>
       <div class="modal-actions">
-        <button id="opOk" class="btn">OK</button>
+        <button id="modal-ok" class="btn">OK</button>
       </div>
     </div>
   </div>
 
-  <script>
-  // ===== v0.9 Reversi room script =====
-
-  // ---- i18n (system_messages.json) ----
-  const i18n = { lang: 'en', t: {} };
-  async function loadI18n() {
-    try {
-      const res = await fetch('/i18n/system_messages.json', { cache: 'no-cache' });
-      const json = await res.json();
-      const lang = (navigator.language || 'en').slice(0,2);
-      i18n.lang = json.opponent_left?.[lang] ? lang : (json.opponent_left?.en ? 'en' : Object.keys(json.opponent_left||{})[0] || 'en');
-      i18n.t = json;
-    } catch (e) {
-      // フォールバック（英語固定）
-      i18n.t = { opponent_left: { en: 'Your opponent has left the room.' } };
-      i18n.lang = 'en';
-    }
-  }
-  function tr(key) {
-    const group = i18n.t[key] || {};
-    return group[i18n.lang] || group.en || key;
-  }
-
-  // ---- アプリ状態 ----
-  const qs = new URLSearchParams(location.search);
-  const ROOM = Math.max(1, Math.min(4, parseInt(qs.get('room')||'1', 10)));
-  const WANT_SEAT = (qs.get('seat') || 'observer').toLowerCase();
-  const SSE_ID = Math.random().toString(36).slice(2,10);
-  document.getElementById('roomNo').textContent = ROOM;
-
-  // UI refs
-  const seatMeEl = document.getElementById('seatMe');
-  const turnNowEl = document.getElementById('turnNow');
-  const statusNowEl = document.getElementById('statusNow');
-  const watchersEl = document.getElementById('watchers');
-  const boardEl = document.getElementById('board');
-
-  // Modal refs
-  const opModal = document.getElementById('opponentModal');
-  const opMsg   = document.getElementById('opMsg');
-  const opOkBtn = document.getElementById('opOk');
-
-  // client state
-  let mySeat = 'observer';
-  let playToken = '';
-  let lastSnapshot = null;
-  let opponentLeftShown = false; // 重複表示を防止
-  let selfLeaving = false;       // 自発的にロビーへ戻る時の誤表示抑止
-  let es = null;
-
-  // ---- Board helpers（実装は既存ルールに合わせる） ----
-  const SIZE = 8;
-  function emptyBoard() {
-    return Array.from({length:SIZE}, _=>'--------');
-  }
-  function renderBoard(stones) {
-    // 既存の描画方式に合わせて最小実装（CSSは style.css に依存）
-    boardEl.innerHTML = '';
-    const table = document.createElement('div');
-    table.style.display = 'grid';
-    table.style.gridTemplateColumns = `repeat(${SIZE}, 1fr)`;
-    table.style.gap = '6px';
-    table.style.width = 'min(92vw, 560px)';
-    table.style.margin = '0 auto';
-
-    for (let y=0; y<SIZE; y++) {
-      for (let x=0; x<SIZE; x++) {
-        const cell = document.createElement('div');
-        cell.style.width = '100%';
-        cell.style.paddingTop = '100%';
-        cell.style.position = 'relative';
-        cell.style.background = '#2b7f3a';
-        cell.style.borderRadius = '8px';
-        const ch = stones?.[y]?.[x] || '-';
-        if (ch === 'B' || ch === 'W') {
-          const disk = document.createElement('div');
-          disk.style.position='absolute'; disk.style.inset='10%';
-          disk.style.borderRadius='50%';
-          disk.style.background = (ch==='B') ? '#000' : '#fff';
-          cell.appendChild(disk);
-        }
-        table.appendChild(cell);
-      }
-    }
-    boardEl.appendChild(table);
-  }
-
-  // ---- モーダル制御 ----
-  function showOpponentLeftModal() {
-    // 既に表示中/自発leave/観戦なら表示しない
-    if (opponentLeftShown || selfLeaving || mySeat === 'observer') return;
-    opMsg.textContent = tr('opponent_left');   // v0.9: 必ず文言を注入
-    opModal.classList.add('show');
-    opModal.setAttribute('aria-hidden', 'false');
-    opponentLeftShown = true;
-  }
-  function hideOpponentLeftModal() {
-    if (!opponentLeftShown) return;
-    opModal.classList.remove('show');
-    opModal.setAttribute('aria-hidden', 'true');
-    opponentLeftShown = false;
-  }
-
-  // OK押下：サーバ通信なし。UIを waiting 表示に戻すだけ
-  opOkBtn.addEventListener('click', () => {
-    hideOpponentLeftModal();
-    statusNowEl.textContent = 'waiting';
-  });
-
-  // ---- JOIN → SSE 開始 ----
-  async function join() {
-    const res = await fetch('/api/action', {
-      method: 'POST',
-      headers: {'content-type':'application/json'},
-      body: JSON.stringify({ action:'join', room: ROOM, seat: WANT_SEAT, sse: SSE_ID })
-    });
-    playToken = res.headers.get('X-Play-Token') || '';
-    const snap = await res.json();
-    mySeat = (snap.seat || 'observer');
-    seatMeEl.textContent = mySeat;
-    applySnapshot(snap);  // 初期表示
-    startSSE();
-  }
-
-  function startSSE() {
-    if (es) { try { es.close(); } catch {} }
-    // v0.9: EventSourceで /?room=...&seat=...&sse=... に接続（middlewareがDOへプロキシ）
-    const url = `/?room=${encodeURIComponent(ROOM)}&seat=${encodeURIComponent(mySeat)}&sse=${encodeURIComponent(SSE_ID)}`;
-    es = new EventSource(url);
-    es.addEventListener('room_state', ev => {
-      try {
-        const data = JSON.parse(ev.data);
-        applySnapshot(data);
-      } catch (e) {}
-    });
-    es.addEventListener('error', _ => {
-      // 切断時の軽いリトライ（既存動作に合わせて控えめに）
-      setTimeout(()=>{ if (es && es.readyState === 2) startSSE(); }, 1200);
-    });
-  }
-
-  // ---- スナップショット適用（UIロジックの肝） ----
-  function applySnapshot(snap) {
-    lastSnapshot = snap;
-
-    // インジケータ
-    watchersEl.textContent = snap.watchers ?? 0;
-    turnNowEl.textContent = snap.turn === 'black' ? '●' : snap.turn === 'white' ? '○' : '–';
-
-    // 盤面
-    const stones = snap.board?.stones || emptyBoard();
-    renderBoard(stones);
-
-    // ステータス表示（サーバの status をまず反映）
-    const serverStatus = snap.status || 'waiting';
-    statusNowEl.textContent = serverStatus;
-
-    // ---- v0.9: 相手が退出したかの検知とモーダル表示・抑止 ----
-    // 条件：
-    //  - 自分はプレイヤー（observerでない）
-    //  - 直前は両席が埋まっていた or playing だった
-    //  - 今回 seats のいずれかが空、かつ自分の席は維持
-    //  - 自発 leave 抑止フラグが false
-    const seats = snap.seats || { black:false, white:false };
-    const bothNow = !!(seats.black && seats.white);
-
-    // 直前の座席状況
-    const prevSeats = applySnapshot._prevSeats || { black:false, white:false };
-    const bothPrev = !!(prevSeats.black && prevSeats.white);
-
-    // 自分の席がどちらか判定
-    const imBlack = (mySeat === 'black');
-    const imWhite = (mySeat === 'white');
-
-    // 「相手がいなくなった」瞬間を検出
-    const iWasPlaying = applySnapshot._prevStatusWasPlaying || false;
-    const leftNow =
-      (iWasPlaying || bothPrev) &&
-      !bothNow &&
-      ((imBlack && seats.black) || (imWhite && seats.white)); // 自分はまだ座っている
-
-    // playing 復帰（相手再入室）でモーダルを強制クローズ
-    if (serverStatus === 'playing' && bothNow) {
-      hideOpponentLeftModal();
-    } else if (leftNow && !selfLeaving) {
-      // 盤面ゼロ＆モーダル表示
-      renderBoard(emptyBoard());
-      showOpponentLeftModal();
-      // 表示テキストが leave のまま残らないように UI は waiting に寄せる
-      statusNowEl.textContent = 'waiting';
-    }
-
-    // 次回比較用に保持
-    applySnapshot._prevSeats = seats;
-    applySnapshot._prevStatusWasPlaying = (serverStatus === 'playing');
-  }
-
-  // ---- 自発 leave（ロビーへ）時の抑止 ----
-  const lobbyLink = document.getElementById('lobbyLink');
-  lobbyLink.addEventListener('click', async (ev) => {
-    try {
-      selfLeaving = true; // これで自分の離脱通知ではモーダルを出さない
-      if (playToken) {
-        await fetch('/api/action', {
-          method: 'POST',
-          headers: { 'content-type':'application/json', 'X-Play-Token': playToken },
-          body: JSON.stringify({ action:'leave', room: ROOM, sse: SSE_ID })
-        });
-      }
-    } catch (_) { /* no-op */ }
-    // 既存の遷移をそのまま継続（event.preventDefaultしない）
-  });
-
-  // ページ離脱（タブ閉じ等）でも抑止
-  window.addEventListener('beforeunload', () => { selfLeaving = true; });
-
-  // ---- 起動 ----
-  (async () => {
-    await loadI18n();              // 先に i18n をロード
-    opMsg.textContent = tr('opponent_left'); // 初期化（空白対策）
-    await join();
-  })();
-  </script>
+  <script src="/reverse.js" defer></script>
 </body>
 </html>
