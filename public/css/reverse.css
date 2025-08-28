@@ -1,4 +1,4 @@
-/* Reversi room styles (0.9b) */
+/* Reversi room styles (0.9b/0.9d 互換) */
 :root {
   color-scheme: dark;
   --bg: #0e0f10;
@@ -31,13 +31,15 @@ body {
   font: 16px/1.5 ui-sans-serif, -apple-system, Segoe UI, Roboto, Noto Sans JP, Helvetica, Arial, Apple Color Emoji, Segoe UI Emoji;
 }
 
-.header {
+/* ▼hud 互換：.hud でも .header でも効くように */
+.header, .hud {
   display: flex;
   gap: 10px;
   flex-wrap: wrap;
   padding: 10px 12px;
   align-items: center;
 }
+
 .badge {
   background: var(--panel);
   border: 1px solid var(--panel-border);
@@ -59,12 +61,13 @@ body {
   color: var(--text);
 }
 
-/* Board */
-.board-wrap {
+/* ▼board-wrap 互換：#board-wrap と .board-wrap の両方を受ける */
+.board-wrap, #board-wrap {
   padding: 10px 12px 24px;
   display: flex;
   justify-content: center;
 }
+
 .board {
   position: relative;
   background: var(--board-green-dark);
@@ -72,6 +75,7 @@ body {
   border-radius: 14px;
   box-shadow: 0 8px 24px rgba(0,0,0,.25) inset, 0 6px 18px rgba(0,0,0,.15);
 }
+
 .grid {
   display: grid;
   grid-template-columns: repeat(8, var(--cell-size));
@@ -134,7 +138,7 @@ body {
   border-radius: 50%;
   transform: translate(-50%, -50%);
   pointer-events: none;
-  /* left/top は JS でセット（%）*/
+  /* left/top は HTMLの inline style（%）で指定 */
 }
 
 /* Modal (simple native-like) */

@@ -3,11 +3,13 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>Reversi 0.9d</title>
+  <title>Reversi 0.9e</title>
+  <!-- 外出しCSS（フルパスのままでOK） -->
   <link rel="stylesheet" href="/css/reverse.css" />
 </head>
 <body>
-  <header class="hud">
+  <!-- CSSの .header に合わせて hud → header に変更 -->
+  <header class="header">
     <div class="badge">Room <span id="hud-room">-</span></div>
     <div class="badge">Seat: <span id="hud-seat">-</span></div>
     <div class="badge">Turn: <span id="hud-turn">-</span></div>
@@ -17,19 +19,14 @@
   </header>
 
   <main class="stage">
-    <div id="board-wrap">
-      <!-- 星（ドット）オーバーレイ：中央4x4の四隅に配置 -->
-      <div class="board-stars">
-        <div class="star" style="--x:25%; --y:25%;"></div>
-        <div class="star" style="--x:75%; --y:25%;"></div>
-        <div class="star" style="--x:25%; --y:75%;"></div>
-        <div class="star" style="--x:75%; --y:75%;"></div>
-      </div>
-
-      <!-- 盤面 -->
+    <!-- CSSの .board-wrap に合わせて id → class に変更 -->
+    <div class="board-wrap">
+      <!-- 星（4点）は CSS の .hoshi を使う -->
       <div id="board" class="board" aria-label="reversi board">
-        <!-- ★ 追加：JS/CSS が期待するグリッド要素 -->
-        <div class="grid"></div>
+        <div class="hoshi" style="left:25%; top:25%"></div>
+        <div class="hoshi" style="left:75%; top:25%"></div>
+        <div class="hoshi" style="left:25%; top:75%"></div>
+        <div class="hoshi" style="left:75%; top:75%"></div>
       </div>
     </div>
   </main>
@@ -44,6 +41,7 @@
     </div>
   </div>
 
+  <!-- 外出しJS（フルパスのままでOK） -->
   <script src="/js/reverse.js" defer></script>
 </body>
 </html>
