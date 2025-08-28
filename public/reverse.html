@@ -3,45 +3,38 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>Reversi 0.9e</title>
-  <!-- 外出しCSS（フルパスのままでOK） -->
+  <title>Reversi</title>
+  <!-- パスは絶対パスのままでOK（/css,/js 配下に配置済み想定） -->
   <link rel="stylesheet" href="/css/reverse.css" />
 </head>
 <body>
-  <!-- CSSの .header に合わせて hud → header に変更 -->
+  <!-- CSSに合わせて .header を使用 -->
   <header class="header">
     <div class="badge">Room <span id="hud-room">-</span></div>
     <div class="badge">Seat: <span id="hud-seat">-</span></div>
     <div class="badge">Turn: <span id="hud-turn">-</span></div>
     <div class="badge">Status: <span id="hud-status">-</span></div>
     <div class="badge">Watchers: <span id="hud-watchers">0</span></div>
-    <a id="lobby" class="link">Lobby</a>
+    <a id="to-lobby" class="link">Lobby</a>
   </header>
 
-  <main class="stage">
-    <!-- CSSの .board-wrap に合わせて id → class に変更 -->
+  <main>
+    <!-- CSSに合わせて .board-wrap を使用 -->
     <div class="board-wrap">
-      <!-- 星（4点）は CSS の .hoshi を使う -->
-      <div id="board" class="board" aria-label="reversi board">
-        <div class="hoshi" style="left:25%; top:25%"></div>
-        <div class="hoshi" style="left:75%; top:25%"></div>
-        <div class="hoshi" style="left:25%; top:75%"></div>
-        <div class="hoshi" style="left:75%; top:75%"></div>
-      </div>
+      <div id="board" class="board" aria-label="reversi board"></div>
     </div>
   </main>
 
-  <!-- opponent-left モーダル -->
-  <div id="modal" class="modal" role="dialog" aria-modal="true" aria-labelledby="modal-text">
-    <div class="modal-box">
-      <div id="modal-text"></div>
-      <div class="modal-actions">
+  <!-- Modal: CSS想定に合わせて backdrop を用意しつつ、JSが使うIDは維持 -->
+  <div id="modal-backdrop" class="modal-backdrop" style="display:none;">
+    <div class="modal" role="dialog" aria-modal="true" aria-labelledby="modal-text">
+      <p id="modal-text" class="msg"></p>
+      <div class="row">
         <button id="modal-ok" class="btn">OK</button>
       </div>
     </div>
   </div>
 
-  <!-- 外出しJS（フルパスのままでOK） -->
   <script src="/js/reverse.js" defer></script>
 </body>
 </html>
