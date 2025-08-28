@@ -1,4 +1,4 @@
-// workers/do-worker/worker.ts
+// workers/do-worker/worker.ts  v0.6
 export interface Env {
   REVERSI_HUB: DurableObjectNamespace;
   LOG_BUCKET?: R2Bucket; // あっても使わない（R2保存はPages側ミドルでやる）
@@ -22,25 +22,25 @@ type RoomState = {
   board: string[];
   turn: Turn;
   status: Status;
+  // v0.6: 各色の「最初の一手」ログ済みフラグ
+  firstMoveLoggedBlack: boolean;
+  firstMoveLoggedWhite: boolean;
 };
 
 type TokenInfo = { room: number, seat: Exclude<Seat,'observer'>, sseId?: string };
 
+// ---- 盤面ユーティリティ ----
 function initialBoard(): string[] {
   const rows = Array.from({length:8}, _ => '--------');
   const set = (x:number,y:number,ch:string) => { const r = rows[y].split(''); r[x]=ch; rows[y]=r.join(''); };
   set(3,3,'W'); set(4,4,'W'); set(3,4,'B'); set(4,3,'B');
   return rows;
 }
-
-function cloneBoard(b:string[]): string[] { return b.slice(); }
-
 function posToXY(pos:string): [number,number] {
   const col = pos[0].toLowerCase().charCodeAt(0) - 97;
-  const row = parseInt(pos.slice(1),10) -  1;
+  const row = parseInt(pos.slice(1),10) - 1;
   return [col,row];
 }
-
 const DIRS = [[1,0],[-1,0],[0,1],[0,-1],[1,1],[1,-1],[-1,1],[-1,-1]];
 
 function legalMoves(board:string[], turn:Exclude<Turn,null>): string[] {
@@ -94,10 +94,16 @@ function countBW(board:string[]): {B:number,W:number}{
   return {B,W};
 }
 
+// ---- ログユーティリティ ----
 const tokShort = (t?:string)=> t ? `${t.slice(0,2)}******` : '';
 
-// --- 構造化ログ ---
+// 許可するログタイプ（環境変数 LOG_TYPES が無ければ v0.6 既定を採用）
+const ALLOW = new Set<string>((
+  (globalThis as any).LOG_TYPES || 'MOVE_FIRST_BLACK,MOVE_FIRST_WHITE,LEAVE_BLACK,LEAVE_WHITE'
+).split(',').map(s=>s.trim()).filter(Boolean));
+
 const slog = (type: string, fields: Record<string, any> = {}) => {
+  if (!ALLOW.has(type)) return;
   try { console.log(JSON.stringify({ type, t: Date.now(), ...fields })); } catch {}
 };
 
@@ -111,7 +117,18 @@ export class ReversiHub {
 
   constructor(state: DurableObjectState, env: Env){
     this.state = state;
-    for (const n of [1,2,3,4]) this.rooms.set(n, { watchers:0, board: initialBoard(), turn:null, status:'waiting' });
+    for (const n of [1,2,3,4]) this.rooms.set(n, this.newRoom());
+  }
+
+  private newRoom(): RoomState {
+    return {
+      watchers:0,
+      board: initialBoard(),
+      turn:null,
+      status:'waiting',
+      firstMoveLoggedBlack:false,
+      firstMoveLoggedWhite:false
+    };
   }
 
   snapshot(room:number, seat?:Seat){
@@ -158,7 +175,8 @@ export class ReversiHub {
     if (url.pathname==='/action' && req.method==='POST') return this.handleAction(req);
     if (url.pathname==='/move'   && req.method==='POST') return this.handleMove(req);
     if (url.pathname==='/admin'  && req.method==='POST') {
-      for (const n of [1,2,3,4]) this.rooms.set(n, { watchers:0, board: initialBoard(), turn:null, status:'waiting' });
+      for (const n of [1,2,3,4]) this.rooms.set(n, this.newRoom());
+      // （v0.6は管理ログを既定で抑制：必要時は LOG_TYPES に ADMIN_RESET を追加）
       slog('ADMIN_RESET', {});
       this.broadcastLobby(); for (const n of [1,2,3,4]) this.broadcastRoom(n);
       return json({ok:true});
@@ -207,7 +225,7 @@ export class ReversiHub {
         else if (sseId){
           const info = this.findBySseId(sseId);
           if (info && info.room===room) {
-            slog('LEAVE_ONCLOSE', { room, seat: info.seat, sseId });
+            // onclose経由の離脱も LEAVE_* を出す（集中管理のため leaveByTokenInfo 内で出力）
             this.leaveByTokenInfo(info);
           }
         }
@@ -238,10 +256,8 @@ export class ReversiHub {
           this.tokenMap.set(token, { room, seat: wantSeat, sseId });
           if (sseId) this.sseMap.set(sseId, { room, seat: wantSeat });
           if (r.black && r.white){ r.status='playing'; r.turn='black'; }
-          slog('JOIN', {
-            room, seat: wantSeat, token: tokShort(token),
-            seats: { B: !!r.black, W: !!r.white }, status: r.status, turn: r.turn
-          });
+          // JOIN ログは既定では抑制（必要なら LOG_TYPES に JOIN を追加）
+          slog('JOIN', { room, seat: wantSeat, token: tokShort(token), seats:{B:!!r.black,W:!!r.white}, status:r.status, turn:r.turn });
         } else {
           seat = 'observer';
           slog('JOIN_TO_OBS', { room, want: wantSeat });
@@ -260,12 +276,11 @@ export class ReversiHub {
       const token = req.headers.get('X-Play-Token') || '';
       if (token){
         const info = this.tokenMap.get(token);
-        if (info){ slog('LEAVE', { room: info.room, seat: info.seat, token: tokShort(token) }); this.leaveByTokenInfo(info); }
+        if (info){ this.leaveByTokenInfo(info); }
         const hdr = new Headers({'Content-Type':'application/json','X-Log-Event':'token-deleted'});
         return new Response(JSON.stringify(this.snapshot(room)), {status:200, headers:hdr});
       }else if (sseId && this.sseMap.has(sseId)){
         const info = this.sseMap.get(sseId)!;
-        slog('LEAVE_BY_SSEID', { room: info.room, seat: info.seat, sseId });
         this.leaveByTokenInfo(info);
         const hdr = new Headers({'Content-Type':'application/json','X-Log-Event':'token-deleted'});
         return new Response(JSON.stringify(this.snapshot(info.room)), {status:200, headers:hdr});
@@ -277,12 +292,28 @@ export class ReversiHub {
     return new Response('Bad Request', {status:400});
   }
 
+  // v0.6: 離脱時のログはここで一元出力（LEAVE_BLACK / LEAVE_WHITE）
   leaveByTokenInfo(info:TokenInfo){
     const r = this.rooms.get(info.room)!;
-    if (info.seat==='black' && r.black){ this.tokenMap.delete(r.black); r.black=undefined; }
-    if (info.seat==='white' && r.white){ this.tokenMap.delete(r.white); r.white=undefined; }
+
+    if (info.seat==='black' && r.black){
+      slog('LEAVE_BLACK', { room: info.room });
+      this.tokenMap.delete(r.black); r.black=undefined;
+    }
+    if (info.seat==='white' && r.white){
+      slog('LEAVE_WHITE', { room: info.room });
+      this.tokenMap.delete(r.white); r.white=undefined;
+    }
+
+    // 盤面とフラグを初期化
     r.board = initialBoard(); r.turn=null; r.status='waiting';
-    for (const [k,v] of Array.from(this.sseMap.entries())) if (v.room===info.room && v.seat===info.seat) this.sseMap.delete(k);
+    r.firstMoveLoggedBlack = false;
+    r.firstMoveLoggedWhite = false;
+
+    // sseId 紐付きも掃除
+    for (const [k,v] of Array.from(this.sseMap.entries()))
+      if (v.room===info.room && v.seat===info.seat) this.sseMap.delete(k);
+
     this.broadcastLobby(); this.broadcastRoom(info.room);
   }
 
@@ -295,33 +326,27 @@ export class ReversiHub {
     const pos: string = (body.pos || '').toLowerCase();
     const r = this.rooms.get(room)!;
 
-    // ここから"必ず何か出る"系ログ
     const info = this.tokenMap.get(token);
-    slog('MOVE_ATTEMPT', {
-      room, pos, token: tokShort(token),
-      haveInfo: !!info, status: r.status, turn: r.turn
-    });
-
-    if (!info || info.room!==room) {
-      slog('MOVE_REJECT', { room, pos, reason:'unauthorized-or-room-mismatch' });
-      return json({error:'unauthorized'}, 403);
-    }
-    if (r.status!=='playing' || !r.turn) {
-      slog('MOVE_REJECT', { room, pos, reason:'not-playing-or-no-turn' });
-      return json(this.snapshot(room));
-    }
-    if (info.seat !== r.turn) {
-      slog('MOVE_REJECT', { room, pos, reason:'not-your-turn', player: info.seat, turn: r.turn });
-      return json(this.snapshot(room));
-    }
+    if (!info || info.room!==room) return json({error:'unauthorized'}, 403);
+    if (r.status!=='playing' || !r.turn) return json(this.snapshot(room));
+    if (info.seat !== r.turn) return json(this.snapshot(room));
 
     const legals = legalMoves(r.board, r.turn);
-    if (!legals.includes(pos)) {
-      slog('MOVE_REJECT', { room, pos, reason:'illegal', legals });
-      return json(this.snapshot(room));
+    if (!legals.includes(pos)) return json(this.snapshot(room));
+
+    // 着手
+    r.board = applyMove(r.board, pos, r.turn);
+
+    // v0.6: 各色の「最初の一手」だけ MOVE_FIRST_* を出す
+    if (info.seat==='black' && !r.firstMoveLoggedBlack) {
+      r.firstMoveLoggedBlack = true;
+      slog('MOVE_FIRST_BLACK', { room, pos });
+    } else if (info.seat==='white' && !r.firstMoveLoggedWhite) {
+      r.firstMoveLoggedWhite = true;
+      slog('MOVE_FIRST_WHITE', { room, pos });
     }
 
-    r.board = applyMove(r.board, pos, r.turn);
+    // 手番更新
     const next = r.turn==='black' ? 'white' : 'black';
     const nextLegal = legalMoves(r.board, next);
     if (nextLegal.length>0){ r.turn = next; }
@@ -330,6 +355,7 @@ export class ReversiHub {
       if (curLegal.length===0){ r.turn=null; r.status='finished'; }
     }
 
+    // 参考ログ（既定では抑制。必要なら LOG_TYPES に MOVE を追加）
     const {B,W}=countBW(r.board);
     slog('MOVE', { room, seat: info.seat, pos, nextTurn: r.turn, counts: { B, W } });
 
