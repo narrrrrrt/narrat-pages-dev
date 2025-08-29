@@ -6,46 +6,39 @@
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <link href="/css/reverse.css" rel="stylesheet" />
   <style>
-    /* 追加: デバッグ表示の最小スタイル（既存CSSに影響しない範囲） */
-    #debug-join {
-      margin: 12px 0 24px;
-      padding: 8px 10px;
-      font-size: 12px;
-      line-height: 1.4;
-      background: #f6f6f6;
-      border: 1px solid #ddd;
-      border-radius: 6px;
-      white-space: pre-wrap;
-      word-break: break-all;
-      max-height: 40vh;
-      overflow: auto;
+    /* debug panel */
+    #debug-box{
+      position:fixed; right:12px; top:12px; width:280px; height:260px;
+      border:1px solid #ccc; background:#fff; padding:8px; overflow:auto; z-index:999;
+      font:12px/1.4 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      border-radius:6px;
     }
-    #debug-join .muted { opacity: .7; }
+    #debug-box h4{margin:0 0 6px 0; font-size:12px;}
+    #debug-join{white-space:pre-wrap; word-break:break-word;}
   </style>
 </head>
 <body>
-  <header class="hud">
-    <div class="badge"><b>Room</b>: <span id="room-no">-</span></div>
-    <div class="badge"><b>Seat</b>: <span id="seat-now">-</span></div>
-    <div class="badge"><b>Turn</b>: <span id="turn">-</span></div>
-    <div class="badge"><b>Status</b>: <span id="status">-</span></div>
-    <div class="badge"><b>Watchers</b>: <span id="watchers">0</span></div>
+  <div class="hud">
+    <div class="badge">Room: <span id="room-no">-</span></div>
+    <div class="badge">Seat: <span id="seat-now">observer</span></div>
+    <div class="badge">Turn: <span id="turn">–</span></div>
+    <div class="badge">Status: <span id="status">waiting</span></div>
+    <div class="badge">Watchers: <span id="watchers">0</span></div>
     <a class="link" href="/index.html">Lobby</a>
-  </header>
+  </div>
 
-  <main class="stage">
-    <div id="board-wrap">
-      <div id="board" class="board" aria-label="reversi board">
-        <div id="grid" class="grid"></div>
-        <div id="stones"></div>
-        <div id="legals"></div>
-      </div>
-    </div>
+  <div id="board">
+    <div id="grid"></div>
+    <div id="stones"></div>
+    <div id="legals"></div>
+  </div>
 
-    <!-- ★ 追加: デバッグ表示領域（join 送信内容などを出す） -->
-    <pre id="debug-join"><span class="muted">[debug output will appear here]</span></pre>
-  </main>
+  <!-- debug panel (JOIN 送信内容とSSEエラーなどを表示) -->
+  <div id="debug-box">
+    <h4>[debug output will appear here]</h4>
+    <pre id="debug-join"></pre>
+  </div>
 
-  <script src="/js/reverse.js" defer></script>
+  <script src="/js/reverse.js"></script>
 </body>
 </html>
