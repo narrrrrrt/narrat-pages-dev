@@ -1,362 +1,411 @@
-// workers/do-worker/worker.ts
-// v1.1.x -- SSEとjoin周りを安定化（ヘッダー認証を廃止・即時スナップショット送出・ハートビートSログ）
-
+// workers/do-worker/worker.ts  v0.8
 export interface Env {
-  ReversiDO: DurableObjectNamespace;
+  REVERSI_HUB: DurableObjectNamespace;
+  LOG_BUCKET?: R2Bucket; // あっても使わない（R2保存はPages側ミドルでやる）
 }
 
-type Seat = "black" | "white" | "observer";
-type Status = "waiting" | "black" | "white" | "ended";
+type Seat = 'black'|'white'|'observer';
+type Turn = 'black'|'white'|null;
+type Status = 'waiting'|'playing'|'leave'|'finished';
 
-type Board = { size: number; stones: string[] };
-type RoomSnapshot = {
-  room: number;
+type Client = {
+  controller: ReadableStreamDefaultController;
   seat: Seat;
-  status: Status;
-  turn: "black" | "white" | null;
-  board: Board;
-  legal: string[];
+  room: number;
+  sseId?: string;
+};
+
+type RoomState = {
+  black?: string;
+  white?: string;
   watchers: number;
+  board: string[];
+  turn: Turn;
+  status: Status;
+  // v0.6+: 各色の「最初の一手」ログ済みフラグ
+  firstMoveLoggedBlack: boolean;
+  firstMoveLoggedWhite: boolean;
 };
 
-type LobbySnapshot = {
-  rooms: {
-    [id: string]: {
-      seats: { black: boolean; white: boolean };
-      watchers: number;
-      status: Status;
-    };
-  };
-  ts: number;
-};
+type TokenInfo = { room: number, seat: Exclude<Seat,'observer'>, sseId?: string };
 
-const TEXT = new TextEncoder();
-const JSONH = { "content-type": "application/json" };
+// ---- 盤面ユーティリティ ----
+function initialBoard(): string[] {
+  const rows = Array.from({length:8}, _ => '--------');
+  const set = (x:number,y:number,ch:string) => { const r = rows[y].split(''); r[x]=ch; rows[y]=r.join(''); };
+  set(3,3,'W'); set(4,4,'W'); set(3,4,'B'); set(4,3,'B');
+  return rows;
+}
+function zeroBoard(): string[] {
+  return Array.from({length:8}, _ => '--------');
+}
+function posToXY(pos:string): [number,number] {
+  const col = pos[0].toLowerCase().charCodeAt(0) - 97;
+  const row = parseInt(pos.slice(1),10) - 1;
+  return [col,row];
+}
+const DIRS = [[1,0],[-1,0],[0,1],[0,-1],[1,1],[1,-1],[-1,1],[-1,-1]];
 
-/* ----------------------------------------------------- */
-/* Pages entrypoint                                      */
-/* ----------------------------------------------------- */
-export default {
-  async fetch(req: Request, env: Env): Promise<Response> {
-    const url = new URL(req.url);
-    const isSSE = req.headers.get("accept")?.includes("text/event-stream");
-
-    // /api/action は必ず DO に投げる
-    if (url.pathname === "/api/action") {
-      const id = env.ReversiDO.idFromName("reversi");
-      const stub = env.ReversiDO.get(id);
-      return await stub.fetch(req);
-    }
-
-    // SSEは /?room=all | /?room=N のどちらでもここでDOへ
-    if (isSSE && url.searchParams.has("room")) {
-      const id = env.ReversiDO.idFromName("reversi");
-      const stub = env.ReversiDO.get(id);
-      return await stub.fetch(req);
-    }
-
-    // それ以外（静的）はPagesに任せる（このワーカーは触らない）
-    return new Response(null, { status: 404 });
-  },
-};
-
-/* ----------------------------------------------------- */
-/* Durable Object                                         */
-/* ----------------------------------------------------- */
-export class ReversiDO {
-  state: DurableObjectState;
-
-  // 盤面・座席
-  rooms: Map<
-    number,
-    {
-      black: boolean;
-      white: boolean;
-      turn: "black" | "white" | null;
-      board: Board;
-      status: Status;
-      watchers: number; // 接続中SSE(部屋)数
-    }
-  > = new Map();
-
-  // SSE: ロビー
-  sseAll: Set<WritableStreamDefaultWriter> = new Set();
-  // SSE: 各部屋
-  sseRoom: Map<number, Set<WritableStreamDefaultWriter>> = new Map();
-
-  constructor(state: DurableObjectState, _env: Env) {
-    this.state = state;
-    // 初期化（4部屋固定）
-    for (let r = 1; r <= 4; r++) {
-      this.rooms.set(r, {
-        black: false,
-        white: false,
-        turn: null,
-        board: initBoard(),
-        status: "waiting",
-        watchers: 0,
-      });
+function legalMoves(board:string[], turn:Exclude<Turn,null>): string[] {
+  const me = turn==='black'?'B':'W';
+  const op = turn==='black'?'W':'B';
+  const moves: string[] = [];
+  for (let y=0; y<8; y++){
+    for (let x=0; x<8; x++){
+      if (board[y][x] !== '-') continue;
+      let ok = false;
+      for (const [dx,dy] of DIRS){
+        let i=x+dx, j=y+dy, seen=false;
+        while (i>=0 && i<8 && j>=0 && j<8){
+          const ch = board[j][i];
+          if (ch===op){ seen=true; i+=dx; j+=dy; continue; }
+          if (ch===me && seen){ ok=true; break; }
+          break;
+        }
+        if (ok) break;
+      }
+      if (ok) moves.push(String.fromCharCode(97+x)+(y+1));
     }
   }
+  return moves.sort();
+}
 
-  /* ---------------------- HTTP入口 --------------------- */
-  async fetch(req: Request): Promise<Response> {
+function applyMove(board:string[], pos:string, turn:Exclude<Turn,null>): string[] {
+  const [x,y] = posToXY(pos);
+  const me = turn==='black'?'B':'W';
+  const op = turn==='black'?'W':'B';
+  if (board[y][x] !== '-') return board;
+  const rows = board.map(r=>r.split(''));
+  let flipped = 0;
+  for (const [dx,dy] of DIRS){
+    let i=x+dx, j=y+dy;
+    const buf:[number,number][]=[];
+    while (i>=0 && i<8 && j>=0 && j<8){
+      const ch = rows[j][i];
+      if (ch===op){ buf.push([i,j]); i+=dx; j+=dy; continue; }
+      if (ch===me && buf.length){ for (const [fx,fy] of buf){ rows[fy][fx]=me; flipped++; } }
+      break;
+    }
+  }
+  if (!flipped) return board;
+  rows[y][x]=me;
+  return rows.map(r=>r.join(''));
+}
+
+function countBW(board:string[]): {B:number,W:number}{
+  let B=0,W=0; for (const r of board) for (const ch of r){ if(ch==='B')B++; else if(ch==='W')W++; }
+  return {B,W};
+}
+
+// ---- ログユーティリティ ----
+const tokShort = (t?:string)=> t ? `${t.slice(0,2)}******` : '';
+
+// 許可するログタイプ（環境変数 LOG_TYPES が無ければ v0.7 既定）
+const ALLOW = new Set<string>((
+  (globalThis as any).LOG_TYPES || 'MOVE_FIRST_BLACK,MOVE_FIRST_WHITE,LEAVE_BLACK,LEAVE_WHITE'
+).split(',').map(s=>s.trim()).filter(Boolean));
+
+// 共通フィールド log="REVERSI" を付与（ダッシュボードで log=REVERSI で一発フィルタ）
+const slog = (type: string, fields: Record<string, any> = {}) => {
+  if (!ALLOW.has(type)) return;
+  try {
+    console.log(JSON.stringify({
+      log: 'REVERSI',
+      type,
+      t: Date.now(),
+      ...fields
+    }));
+  } catch {}
+};
+
+export class ReversiHub {
+  state: DurableObjectState;
+  rooms = new Map<number,RoomState>();
+  lobbyClients = new Set<Client>();
+  roomClients = new Map<number, Set<Client>>([[1,new Set],[2,new Set],[3,new Set],[4,new Set]]);
+  tokenMap = new Map<string,TokenInfo>();
+  sseMap   = new Map<string, TokenInfo>();
+
+  constructor(state: DurableObjectState, env: Env){
+    this.state = state;
+    for (const n of [1,2,3,4]) this.rooms.set(n, this.newRoom());
+  }
+
+  private newRoom(): RoomState {
+    return {
+      watchers:0,
+      board: initialBoard(),
+      turn:null,
+      status:'waiting',
+      firstMoveLoggedBlack:false,
+      firstMoveLoggedWhite:false
+    };
+  }
+
+  snapshot(room:number, seat?:Seat){
+    const r = this.rooms.get(room)!;
+    const legal = r.turn ? legalMoves(r.board, r.turn) : [];
+    return { room, seat, status:r.status, turn:r.turn,
+      board:{size:8, stones:r.board}, legal, watchers:r.watchers,
+      seats:{ black: !!r.black, white: !!r.white } };
+  }
+  snapshotAll(){
+    const pack:any = {}; for (const n of [1,2,3,4]){ const r=this.rooms.get(n)!; pack[n]={ seats:{black:!!r.black,white:!!r.white}, watchers:r.watchers, status:r.status }; }
+    return { rooms: pack, ts: Date.now() };
+  }
+
+  broadcastRoom(room:number){
+    const snap = JSON.stringify(this.snapshot(room));
+    const set = this.roomClients.get(room)!;
+    for (const c of set) { try{ c.controller.enqueue(encoder(`event: room_state\ndata: ${snap}\n\n`)); }catch{} }
+  }
+  broadcastLobby(){
+    const snap = JSON.stringify(this.snapshotAll());
+    for (const c of this.lobbyClients) { try{ c.controller.enqueue(encoder(`event: room_state\ndata: ${snap}\n\n`)); }catch{} }
+  }
+
+  startPinger(set:Set<Client>){
+    const timer = setInterval(()=>{
+      for (const c of set){ try{ c.controller.enqueue(encoder(`event: ping\ndata: ${Date.now()}\n\n`)); }catch{} }
+    }, 3000);
+    this.state.waitUntil(new Promise<void>(resolve=>{
+      const iv=setInterval(()=>{ if (set.size===0){ clearInterval(timer); clearInterval(iv); resolve(); } },5000);
+    }));
+  }
+
+  async fetch(req:Request): Promise<Response>{
     const url = new URL(req.url);
-    const isSSE = req.headers.get("accept")?.includes("text/event-stream");
+    if (url.pathname==='/sse' && req.method==='GET'){
+      const roomQ = url.searchParams.get('room') || 'all';
+      if (roomQ==='all') return this.handleSseLobby();
+      const room = Math.max(1, Math.min(4, parseInt(roomQ,10) || 1));
+      const seat = (url.searchParams.get('seat') || 'observer') as Seat;
+      const sseId = url.searchParams.get('sse') || undefined;
+      return this.handleSseRoom(room, seat, sseId);
+    }
+    if (url.pathname==='/action' && req.method==='POST') return this.handleAction(req);
+    if (url.pathname==='/move'   && req.method==='POST') return this.handleMove(req);
+    if (url.pathname==='/admin'  && req.method==='POST') {
+      for (const n of [1,2,3,4]) this.rooms.set(n, this.newRoom());
+      slog('ADMIN_RESET', {});
+      this.broadcastLobby(); for (const n of [1,2,3,4]) this.broadcastRoom(n);
+      return json({ok:true});
+    }
+    return new Response('OK', {status:200});
+  }
 
-    if (url.pathname === "/api/action" && req.method === "POST") {
-      const body = (await req.json()) as
-        | { action: "join"; room: number; seat: Seat; sse?: string }
-        | { action: "leave"; room: number; sse?: string }
-        | { action: "move"; room: number; xy: string }
-        | { action: "heartbeat"; room?: number; sse?: string };
+  handleSseLobby(): Response {
+    const stream = new ReadableStream({
+      start: (controller) => {
+        const client: Client = { controller, seat:'observer', room:0 };
+        this.lobbyClients.add(client);
+        controller.enqueue(encoder('event: room_state\ndata: '+JSON.stringify(this.snapshotAll())+'\n\n'));
+        if (this.lobbyClients.size===1) this.startPinger(this.lobbyClients);
+        slog('SSE_LOBBY_ADD', { total: this.lobbyClients.size });
+      },
+      cancel: () => { slog('SSE_LOBBY_CANCEL', {}); }
+    });
+    return new Response(stream, sseHeaders());
+  }
 
-      switch (body.action) {
-        case "join":
-          return this.handleJoin(body.room, body.seat);
-        case "leave":
-          return this.handleLeave(body.room);
-        case "move":
-          return this.handleMove(body.room, body.xy);
-        case "heartbeat":
-          console.log(
-            `[SSE] hb room=${body.room ?? "-"} sse=${body.sse ?? "-"}`
-          );
-          // 何も返さない（情報不要のため200のみ）
-          return new Response("OK", { headers: JSONH });
+  handleSseRoom(room:number, seat:Seat, sseId?:string): Response {
+    const clients = this.roomClients.get(room)!;
+    const stream = new ReadableStream({
+      start: (controller) => {
+        const c: Client = { controller, seat, room, sseId };
+        clients.add(c);
+        if (seat==='observer'){ const r=this.rooms.get(room)!; r.watchers++; this.broadcastLobby(); }
+        controller.enqueue(encoder('event: room_state\ndata: '+JSON.stringify(this.snapshot(room, seat))+'\n\n'));
+        if (clients.size===1) this.startPinger(clients);
+        slog('SSE_ROOM_ADD', { room, seat, sseId, total: clients.size });
+      }
+    });
+
+    const origCancel = stream.cancel?.bind(stream);
+    stream.cancel = async (reason?:any) => {
+      try{
+        for (const c of Array.from(this.roomClients.get(room)!)){
+          if (c.seat===seat && c.sseId===sseId){ this.roomClients.get(room)!.delete(c); break; }
+        }
+        const r = this.rooms.get(room)!;
+        if (seat==='observer'){
+          r.watchers=Math.max(0,(r.watchers||0)-1);
+          this.broadcastLobby(); this.broadcastRoom(room);
+        }
+        else if (sseId){
+          const info = this.findBySseId(sseId);
+          if (info && info.room===room) {
+            this.leaveByTokenInfo(info); // 内部で LEAVE_* と leave配信
+          }
+        }
+        slog('SSE_ROOM_DEL', { room, seat, total: this.roomClients.get(room)!.size });
+      }catch(e){ console.warn('cancel err', e); }
+      if (origCancel) await origCancel(reason);
+    };
+
+    return new Response(stream, sseHeaders());
+  }
+
+  async handleAction(req:Request): Promise<Response> {
+    const body = await req.json().catch(()=>({}));
+    const action = (body.action||'').toLowerCase();
+    const room = Math.max(1, Math.min(4, parseInt(body.room,10)||1));
+    const wantSeat = (body.seat || 'observer') as Seat;
+    const sseId = body.sse as (string|undefined);
+    const r = this.rooms.get(room)!;
+
+    if (action==='join'){
+      let seat: Seat = wantSeat;
+      let token: string | undefined;
+      if (wantSeat==='black' || wantSeat==='white'){
+        const occ = wantSeat==='black' ? r.black : r.white;
+        if (!occ){
+          token = genToken();
+          if (wantSeat==='black') r.black = token; else r.white = token;
+          this.tokenMap.set(token, { room, seat: wantSeat, sseId });
+          if (sseId) this.sseMap.set(sseId, { room, seat: wantSeat });
+
+          // ★ 両者が揃った瞬間に初期化して再開（leave からの復帰含む）
+          if (r.black && r.white){
+            r.board = initialBoard();
+            r.status='playing';
+            r.turn='black';
+            r.firstMoveLoggedBlack = false;
+            r.firstMoveLoggedWhite = false;
+          }
+
+          slog('JOIN', { room, seat: wantSeat, token: tokShort(token), seats:{B:!!r.black,W:!!r.white}, status:r.status, turn:r.turn });
+        } else {
+          seat = 'observer';
+          slog('JOIN_TO_OBS', { room, want: wantSeat });
+        }
+      }else{
+        seat='observer';
+        slog('JOIN_OBS', { room });
+      }
+      const hdr = new Headers({'Content-Type':'application/json'});
+      if (token) hdr.set('X-Play-Token', token);
+      this.broadcastLobby(); this.broadcastRoom(room);
+      return new Response(JSON.stringify(this.snapshot(room, seat)), {status:200, headers:hdr});
+    }
+
+    if (action==='leave'){
+      const token = req.headers.get('X-Play-Token') || '';
+      if (token){
+        const info = this.tokenMap.get(token);
+        if (info){ this.leaveByTokenInfo(info); }
+        const hdr = new Headers({'Content-Type':'application/json','X-Log-Event':'token-deleted'});
+        return new Response(JSON.stringify(this.snapshot(room)), {status:200, headers:hdr});
+      }else if (sseId && this.sseMap.has(sseId)){
+        const info = this.sseMap.get(sseId)!;
+        this.leaveByTokenInfo(info);
+        const hdr = new Headers({'Content-Type':'application/json','X-Log-Event':'token-deleted'});
+        return new Response(JSON.stringify(this.snapshot(info.room)), {status:200, headers:hdr});
+      }else{
+        return json({ok:true});
       }
     }
 
-    if (isSSE && url.searchParams.has("room")) {
-      const q = url.searchParams;
-      const key = q.get("room")!;
-      if (key === "all") return this.openLobbySSE();
-      const room = clampRoom(parseInt(key, 10));
-      const seat = (q.get("seat") as Seat) || "observer";
-      return this.openRoomSSE(room, seat);
-    }
-
-    return new Response("Not Found", { status: 404 });
+    return new Response('Bad Request', {status:400});
   }
 
-  /* ---------------------- ACTIONS ---------------------- */
-  private handleJoin(roomN: number, want: Seat): Response {
-    const room = this.rooms.get(clampRoom(roomN))!;
-    let seat: Seat = "observer";
+  // v0.8: 片側が抜けたら status='leave' + ゼロ盤面 + turn=null を即配信
+  //       両者不在になったら waiting + 初期盤面に戻す
+  leaveByTokenInfo(info:TokenInfo){
+    const r = this.rooms.get(info.room)!;
 
-    if (want === "black" && !room.black) {
-      room.black = true;
-      seat = "black";
-    } else if (want === "white" && !room.white) {
-      room.white = true;
-      seat = "white";
+    if (info.seat==='black' && r.black){
+      slog('LEAVE_BLACK', { room: info.room });
+      this.tokenMap.delete(r.black); r.black=undefined;
+    }
+    if (info.seat==='white' && r.white){
+      slog('LEAVE_WHITE', { room: info.room });
+      this.tokenMap.delete(r.white); r.white=undefined;
+    }
+
+    // sseId 紐付きも掃除
+    for (const [k,v] of Array.from(this.sseMap.entries()))
+      if (v.room===info.room && v.seat===info.seat) this.sseMap.delete(k);
+
+    if (!r.black && !r.white){
+      // 誰もいなくなったら waiting に戻す（ロビー表示安定のため）
+      r.board = initialBoard();
+      r.turn = null;
+      r.status = 'waiting';
+      r.firstMoveLoggedBlack = false;
+      r.firstMoveLoggedWhite = false;
     } else {
-      seat = "observer";
+      // 片側が残っている → leave + ゼロ盤面
+      r.board = zeroBoard();
+      r.turn = null;
+      r.status = 'leave';
+      r.firstMoveLoggedBlack = false;
+      r.firstMoveLoggedWhite = false;
     }
 
-    if (room.black && room.white) {
-      room.turn = "black";
-      room.status = "black";
-      room.board = initBoard(); // 新規対局は初期配置
-    } else {
-      room.turn = null;
-      room.status = "waiting";
+    this.broadcastLobby(); this.broadcastRoom(info.room);
+  }
+
+  findBySseId(sseId:string){ return this.sseMap.get(sseId); }
+
+  async handleMove(req:Request): Promise<Response>{
+    const token = req.headers.get('X-Play-Token') || '';
+    const body = await req.json().catch(()=>({}));
+    const room = Math.max(1, Math.min(4, parseInt(body.room,10)||1));
+    const pos: string = (body.pos || '').toLowerCase();
+    const r = this.rooms.get(room)!;
+
+    const info = this.tokenMap.get(token);
+    if (!info || info.room!==room) return json({error:'unauthorized'}, 403);
+    if (r.status!=='playing' || !r.turn) return json(this.snapshot(room));
+    if (info.seat !== r.turn) return json(this.snapshot(room));
+
+    const legals = legalMoves(r.board, r.turn);
+    if (!legals.includes(pos)) return json(this.snapshot(room));
+
+    // 着手
+    r.board = applyMove(r.board, pos, r.turn);
+
+    // 各色の「最初の一手」だけ MOVE_FIRST_* を出す
+    if (info.seat==='black' && !r.firstMoveLoggedBlack) {
+      r.firstMoveLoggedBlack = true;
+      slog('MOVE_FIRST_BLACK', { room, pos });
+    } else if (info.seat==='white' && !r.firstMoveLoggedWhite) {
+      r.firstMoveLoggedWhite = true;
+      slog('MOVE_FIRST_WHITE', { room, pos });
     }
 
-    // 放送（ロビー & 部屋）
-    this.broadcastLobby();
-    this.broadcastRoom(roomN);
-
-    const snapshot = this.snapshotRoom(roomN, seat);
-    // X-Play-Tokenはクライアントの既存設計を尊重して残す（ただしSSEでは使わない）
-    const token = randomToken();
-    return new Response(JSON.stringify(snapshot), {
-      headers: { ...JSONH, "x-play-token": token },
-    });
-  }
-
-  private handleLeave(roomN: number): Response {
-    const room = this.rooms.get(clampRoom(roomN))!;
-    // 座席の明確な識別がないため「空いていれば触らない」方針 → 明示クリアはロビーのReset DOで行う
-    // 試合中断条件にはしない
-    // 放送のみ
-    this.broadcastLobby();
-    this.broadcastRoom(roomN);
-    return new Response(null, { status: 204 });
-  }
-
-  private handleMove(roomN: number, xy: string): Response {
-    const room = this.rooms.get(clampRoom(roomN))!;
-    // 今回は手番・合法手判定は省略（元実装をそのまま利用想定）
-    // 盤面が変わったと仮定して放送
-    room.turn = room.turn === "black" ? "white" : "black";
-    room.status = room.turn; // 表示のために同値
-    this.broadcastLobby();
-    this.broadcastRoom(roomN);
-    return new Response("OK", { headers: JSONH });
-  }
-
-  /* ------------------- SSE: LOBBY/ROOM ------------------ */
-  private openLobbySSE(): Response {
-    const { readable, writable } = new TransformStream();
-    const writer = writable.getWriter();
-    this.sseAll.add(writer);
-
-    // 部屋ごとの watchers を概算するため、接続時点で部屋0に加算しない
-    this.writeEvent(writer, "room_state", JSON.stringify(this.snapshotAll()));
-
-    const pinger = setInterval(() => {
-      this.writePing(writer);
-    }, 15000);
-
-    const close = () => {
-      clearInterval(pinger);
-      this.sseAll.delete(writer);
-      try {
-        writer.releaseLock();
-      } catch {}
-    };
-
-    (readable as any).closed?.finally?.(close);
-    // 旧環境でも確実にクローズされるようフォールバック
-    this.state.waitUntil(
-      (async () => {
-        try {
-          await (readable as any).closed;
-        } catch {}
-        close();
-      })()
-    );
-
-    return new Response(readable, {
-      headers: sseHeaders(),
-    });
-  }
-
-  private openRoomSSE(roomN: number, _seat: Seat): Response {
-    const room = this.rooms.get(clampRoom(roomN))!;
-    const { readable, writable } = new TransformStream();
-    const writer = writable.getWriter();
-
-    let set = this.sseRoom.get(roomN);
-    if (!set) this.sseRoom.set(roomN, (set = new Set()));
-    set.add(writer);
-    room.watchers = set.size;
-
-    // 接続直後にスナップショット
-    this.writeEvent(writer, "room_state", JSON.stringify(this.snapshotRoom(roomN, "observer")));
-    // ロビーにも反映
-    this.broadcastLobby();
-
-    const pinger = setInterval(() => this.writePing(writer), 15000);
-
-    const close = () => {
-      clearInterval(pinger);
-      set!.delete(writer);
-      room.watchers = set!.size;
-      this.broadcastLobby(); // 監視者数が変わるのでロビー更新
-      try {
-        writer.releaseLock();
-      } catch {}
-    };
-
-    (readable as any).closed?.finally?.(close);
-    this.state.waitUntil(
-      (async () => {
-        try {
-          await (readable as any).closed;
-        } catch {}
-        close();
-      })()
-    );
-
-    return new Response(readable, { headers: sseHeaders() });
-  }
-
-  /* -------------------- SNAPSHOTS/BCAST ------------------ */
-  private snapshotRoom(roomN: number, seat: Seat): RoomSnapshot {
-    const r = this.rooms.get(clampRoom(roomN))!;
-    return {
-      room: roomN,
-      seat,
-      status: r.status,
-      turn: r.turn,
-      board: r.board,
-      legal: [], // 簡略化（必要なら元実装で算出）
-      watchers: r.watchers,
-    };
-  }
-
-  private snapshotAll(): LobbySnapshot {
-    const rooms: LobbySnapshot["rooms"] = {};
-    for (const [id, r] of this.rooms) {
-      rooms[id] = {
-        seats: { black: r.black, white: r.white },
-        watchers: r.watchers,
-        status: r.status,
-      };
+    // 手番更新
+    const next = r.turn==='black' ? 'white' : 'black';
+    const nextLegal = legalMoves(r.board, next);
+    if (nextLegal.length>0){ r.turn = next; }
+    else {
+      const curLegal = legalMoves(r.board, r.turn);
+      if (curLegal.length===0){ r.turn=null; r.status='finished'; }
     }
-    return { rooms, ts: Date.now() };
-  }
 
-  private broadcastRoom(roomN: number) {
-    const set = this.sseRoom.get(clampRoom(roomN));
-    if (!set || set.size === 0) return;
-    const snap = JSON.stringify(this.snapshotRoom(roomN, "observer"));
-    for (const w of set) this.writeEvent(w, "room_state", snap);
-  }
+    // 参考ログ（既定では抑制。必要なら LOG_TYPES に MOVE を追加）
+    const {B,W}=countBW(r.board);
+    slog('MOVE', { room, seat: info.seat, pos, nextTurn: r.turn, counts: { B, W } });
 
-  private broadcastLobby() {
-    if (this.sseAll.size === 0) return;
-    const snap = JSON.stringify(this.snapshotAll());
-    for (const w of this.sseAll) this.writeEvent(w, "room_state", snap);
-  }
-
-  /* --------------------- SSE helpers --------------------- */
-  private writeEvent(
-    writer: WritableStreamDefaultWriter,
-    event: string,
-    data: string
-  ) {
-    // EventSource仕様に合わせて2改行で区切る
-    const chunk = `event: ${event}\n` + `data: ${data}\n\n`;
-    writer.write(TEXT.encode(chunk)).catch(() => {});
-  }
-  private writePing(writer: WritableStreamDefaultWriter) {
-    const chunk = `event: ping\n` + `data: ${Date.now()}\n\n`;
-    writer.write(TEXT.encode(chunk)).catch(() => {});
+    const hdr = new Headers({'Content-Type':'application/json'});
+    const snap = this.snapshot(room);
+    this.broadcastRoom(room); this.broadcastLobby();
+    return new Response(JSON.stringify(snap), {status:200, headers:hdr});
   }
 }
 
-/* ----------------------------------------------------- */
-/* Utilities                                             */
-/* ----------------------------------------------------- */
-function initBoard(): Board {
-  const rows = Array(8)
-    .fill("--------")
-    .slice();
-  // D4=White, E5=White, E4=Black, D5=Black（中心4石）
-  rows[3] = "---WB---";
-  rows[4] = "---BW---";
-  return { size: 8, stones: rows };
+function sseHeaders(): ResponseInit {
+  return { headers: { 'Content-Type': 'text/event-stream', 'Cache-Control':'no-cache, no-transform', 'Connection':'keep-alive', 'Access-Control-Allow-Origin':'*' } };
 }
+function encoder(s:string){ return new TextEncoder().encode(s); }
+function json(data:any, code=200){ return new Response(JSON.stringify(data), {status:code, headers:{'Content-Type':'application/json'}}); }
+function genToken(): string { return Math.random().toString(36).slice(2,10); }
 
-function clampRoom(n: number) {
-  if (!Number.isFinite(n)) return 1;
-  if (n < 1) return 1;
-  if (n > 4) return 4;
-  return n | 0;
-}
-
-function randomToken() {
-  return Math.random().toString(36).slice(2, 10);
-}
-
-function sseHeaders(): HeadersInit {
-  return {
-    "content-type": "text/event-stream",
-    "cache-control": "no-store",
-    connection: "keep-alive",
-    "x-content-type-options": "nosniff",
-  };
-}
+export default {
+  async fetch(request: Request, env: Env) {
+    const id = env.REVERSI_HUB.idFromName('global');
+    const stub = env.REVERSI_HUB.get(id);
+    return stub.fetch(request);
+  }
+} satisfies ExportedHandler<Env>;
