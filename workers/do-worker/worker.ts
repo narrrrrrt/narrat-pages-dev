@@ -1,4 +1,4 @@
-// workers/do-worker/worker.ts  -- v1.1.1 Step1 (HB/短TTL監視, SSE ping disabled)
+// workers/do-worker/worker.ts  -- v1.1.1 y2 Step1 (HB/短TTL監視, SSE ping disabled)
 import { json, sseHeaders, encoder, tokShort, genToken, initialBoard } from './utils';
 type Seat = 'black'|'white'|'observer';
 type Status = 'waiting'|'playing'|'leave'|'finished';
