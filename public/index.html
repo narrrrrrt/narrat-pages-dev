@@ -1,42 +1,55 @@
-<!doctype html>
+<!DOCTYPE html>
 <html lang="en">
 <head>
-  <meta charset="utf-8" />
+  <meta charset="UTF-8" />
   <title>Reversi Lobby</title>
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <link href="/css/style.css" rel="stylesheet" />
-  <style>
-    /* 追加: Reset DO ボタンの最小スタイル（既存CSSに影響しないよう限定） */
-    #__reset_container__{position:fixed;right:12px;top:12px;z-index:9999}
-    #__reset_btn__{padding:6px 10px;border:1px solid #ccc;border-radius:6px;background:#fff;cursor:pointer}
-  </style>
+  <link rel="stylesheet" href="/css/style.css" />
 </head>
 <body>
-  <!-- 既存のロビーUIはそのまま（元ZIPの内容を保持） -->
+  <h1>Reversi Lobby</h1>
+  <div id="rooms">
+    <div class="room" id="room1">
+      <h2>Room 1 <span class="status" id="status1">waiting</span>
+        <span class="watchers" id="watchers1">👀0</span>
+      </h2>
+      <button onclick="location.href='/reverse.html?seat=black&room=1'">Join (Black)</button>
+      <button onclick="location.href='/reverse.html?seat=white&room=1'">Join (White)</button>
+      <button onclick="location.href='/reverse.html?seat=observer&room=1'">Spectate</button>
+      <p>Black: vacant / White: vacant</p>
+    </div>
 
-  <!-- 追加スクリプト（既存UIに依存せず Reset DO ボタンだけ追加） -->
-  <script>
-    (function(){
-      // ボタンを差し込む（既存DOMに依存しない）
-      const box = document.createElement('div');
-      box.id = '__reset_container__';
-      box.innerHTML = '<button id="__reset_btn__" type="button">Reset DO</button>';
-      document.addEventListener('DOMContentLoaded', () => {
-        document.body.appendChild(box);
-        const btn = document.getElementById('__reset_btn__');
-        btn.addEventListener('click', async () => {
-          try {
-            await fetch('/api/admin', { method: 'POST' }); // パラメータなし・本文なし
-          } catch (e) {
-            /* 失敗時もリロードで反映を優先 */
-          } finally {
-            location.reload();
-          }
-        });
-      });
+    <div class="room" id="room2">
+      <h2>Room 2 <span class="status" id="status2">waiting</span>
+        <span class="watchers" id="watchers2">👀0</span>
+      </h2>
+      <button onclick="location.href='/reverse.html?seat=black&room=2'">Join (Black)</button>
+      <button onclick="location.href='/reverse.html?seat=white&room=2'">Join (White)</button>
+      <button onclick="location.href='/reverse.html?seat=observer&room=2'">Spectate</button>
+      <p>Black: vacant / White: vacant</p>
+    </div>
 
-      // 既存のロビーSSE/描画処理は元ZIPのまま利用してください（変更不要）
-    })();
-  </script>
+    <div class="room" id="room3">
+      <h2>Room 3 <span class="status" id="status3">waiting</span>
+        <span class="watchers" id="watchers3">👀0</span>
+      </h2>
+      <button onclick="location.href='/reverse.html?seat=black&room=3'">Join (Black)</button>
+      <button onclick="location.href='/reverse.html?seat=white&room=3'">Join (White)</button>
+      <button onclick="location.href='/reverse.html?seat=observer&room=3'">Spectate</button>
+      <p>Black: vacant / White: vacant</p>
+    </div>
+
+    <div class="room" id="room4">
+      <h2>Room 4 <span class="status" id="status4">waiting</span>
+        <span class="watchers" id="watchers4">👀0</span>
+      </h2>
+      <button onclick="location.href='/reverse.html?seat=black&room=4'">Join (Black)</button>
+      <button onclick="location.href='/reverse.html?seat=white&room=4'">Join (White)</button>
+      <button onclick="location.href='/reverse.html?seat=observer&room=4'">Spectate</button>
+      <p>Black: vacant / White: vacant</p>
+    </div>
+  </div>
+
+  <script src="/js/reverse.js"></script>
 </body>
 </html>
