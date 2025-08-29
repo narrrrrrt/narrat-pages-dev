@@ -1,55 +1,87 @@
-<!DOCTYPE html>
+<!doctype html>
 <html lang="en">
 <head>
-  <meta charset="UTF-8" />
-  <title>Reversi Lobby</title>
-  <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <link rel="stylesheet" href="/css/style.css" />
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Reversi Lobby 0.57</title>
+  <link rel="stylesheet" href="/style.css" />
+  <style>
+    :root { color-scheme: light dark; }
+    body { max-width: 980px; margin: 0 auto; padding: 16px; background:#fff; color:#111; }
+    h1 { margin: 8px 0 16px; }
+    .stack { display:flex; flex-direction:column; gap:16px; }
+    .card { border: 1px solid #d4d7dd; border-radius: 12px; padding: 16px; background: #fafbfc; box-shadow: 0 1px 2px rgba(0,0,0,.03); }
+    .row { margin-top: 8px; display:flex; gap:10px; flex-wrap:wrap; }
+    .btn { display:inline-block; padding:8px 12px; border-radius:10px; border:1px solid #2b6cb0; color:#2b6cb0; background:#eef6ff; text-decoration:none; cursor:pointer; }
+    .btn:disabled { opacity:0.5; cursor:not-allowed; }
+    .status { font-size: 12px; color:#444; margin-left:8px; }
+    .watchers { font-size: 12px; margin-left:auto; }
+  </style>
 </head>
 <body>
+
+  <!-- Admin: Reset DO（テスト専用。必要がなくなったら削除可） -->
+  <div id="adminbar" style="position:fixed;right:12px;top:12px;z-index:9999">
+    <button id="btn-reset" class="btn" style="border:1px solid #ccc;background:#fff">Reset DO</button>
+  </div>
+
   <h1>Reversi Lobby</h1>
-  <div id="rooms">
-    <div class="room" id="room1">
-      <h2>Room 1 <span class="status" id="status1">waiting</span>
-        <span class="watchers" id="watchers1">👀0</span>
-      </h2>
-      <button onclick="location.href='/reverse.html?seat=black&room=1'">Join (Black)</button>
-      <button onclick="location.href='/reverse.html?seat=white&room=1'">Join (White)</button>
-      <button onclick="location.href='/reverse.html?seat=observer&room=1'">Spectate</button>
-      <p>Black: vacant / White: vacant</p>
+  <div class="stack">
+    <div class="card" id="room1">
+      <h2>Room 1 <span class="status" id="status1">waiting</span><span class="watchers" id="watchers1">👀0</span></h2>
+      <div class="row">
+        <a class="btn" href="/reverse.html?seat=black&room=1">Join (Black)</a>
+        <a class="btn" href="/reverse.html?seat=white&room=1">Join (White)</a>
+        <a class="btn" href="/reverse.html?seat=observer&room=1">Spectate</a>
+      </div>
     </div>
 
-    <div class="room" id="room2">
-      <h2>Room 2 <span class="status" id="status2">waiting</span>
-        <span class="watchers" id="watchers2">👀0</span>
-      </h2>
-      <button onclick="location.href='/reverse.html?seat=black&room=2'">Join (Black)</button>
-      <button onclick="location.href='/reverse.html?seat=white&room=2'">Join (White)</button>
-      <button onclick="location.href='/reverse.html?seat=observer&room=2'">Spectate</button>
-      <p>Black: vacant / White: vacant</p>
+    <div class="card" id="room2">
+      <h2>Room 2 <span class="status" id="status2">waiting</span><span class="watchers" id="watchers2">👀0</span></h2>
+      <div class="row">
+        <a class="btn" href="/reverse.html?seat=black&room=2">Join (Black)</a>
+        <a class="btn" href="/reverse.html?seat=white&room=2">Join (White)</a>
+        <a class="btn" href="/reverse.html?seat=observer&room=2">Spectate</a>
+      </div>
     </div>
 
-    <div class="room" id="room3">
-      <h2>Room 3 <span class="status" id="status3">waiting</span>
-        <span class="watchers" id="watchers3">👀0</span>
-      </h2>
-      <button onclick="location.href='/reverse.html?seat=black&room=3'">Join (Black)</button>
-      <button onclick="location.href='/reverse.html?seat=white&room=3'">Join (White)</button>
-      <button onclick="location.href='/reverse.html?seat=observer&room=3'">Spectate</button>
-      <p>Black: vacant / White: vacant</p>
+    <div class="card" id="room3">
+      <h2>Room 3 <span class="status" id="status3">waiting</span><span class="watchers" id="watchers3">👀0</span></h2>
+      <div class="row">
+        <a class="btn" href="/reverse.html?seat=black&room=3">Join (Black)</a>
+        <a class="btn" href="/reverse.html?seat=white&room=3">Join (White)</a>
+        <a class="btn" href="/reverse.html?seat=observer&room=3">Spectate</a>
+      </div>
     </div>
 
-    <div class="room" id="room4">
-      <h2>Room 4 <span class="status" id="status4">waiting</span>
-        <span class="watchers" id="watchers4">👀0</span>
-      </h2>
-      <button onclick="location.href='/reverse.html?seat=black&room=4'">Join (Black)</button>
-      <button onclick="location.href='/reverse.html?seat=white&room=4'">Join (White)</button>
-      <button onclick="location.href='/reverse.html?seat=observer&room=4'">Spectate</button>
-      <p>Black: vacant / White: vacant</p>
+    <div class="card" id="room4">
+      <h2>Room 4 <span class="status" id="status4">waiting</span><span class="watchers" id="watchers4">👀0</span></h2>
+      <div class="row">
+        <a class="btn" href="/reverse.html?seat=black&room=4">Join (Black)</a>
+        <a class="btn" href="/reverse.html?seat=white&room=4">Join (White)</a>
+        <a class="btn" href="/reverse.html?seat=observer&room=4">Spectate</a>
+      </div>
     </div>
   </div>
 
   <script src="/js/reverse.js"></script>
+
+  <script>
+    (function(){
+      const ready = () => {
+        const btn = document.getElementById('btn-reset');
+        if (!btn) return;
+        btn.addEventListener('click', async () => {
+          try { await fetch('/api/admin', { method:'POST' }); } catch(_){}
+          location.reload();
+        });
+      };
+      if (document.readyState === 'loading') {
+        document.addEventListener('DOMContentLoaded', ready);
+      } else {
+        ready();
+      }
+    })();
+  </script>
 </body>
 </html>
