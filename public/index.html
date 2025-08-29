@@ -6,13 +6,14 @@
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <link href="/css/style.css" rel="stylesheet" />
   <style>
+    /* 既存CSSがあればそちら優先。これはフォールバック用の軽い体裁だけ */
     .room-grid{display:grid;grid-template-columns:repeat(2,minmax(260px,1fr));gap:16px;margin:16px auto;max-width:900px}
     .card{border:1px solid #ddd;border-radius:10px;padding:12px}
     .hdr{display:flex;justify-content:space-between;align-items:center;margin-bottom:8px}
     .badges span{display:inline-block;border-radius:8px;padding:2px 8px;margin-left:6px;font-size:.85em;background:#f4f4f4}
     .btns{display:flex;gap:8px;flex-wrap:wrap;margin-top:8px}
     .btn{padding:8px 12px;border-radius:6px;border:1px solid #ccc;background:#fff;text-decoration:none;display:inline-block}
-    .disabled{opacity:.5;pointer-events:none}
+    .btn.dim{opacity:.55} /* 占有中の見た目だけ"無効"。クリックは可能（観戦フォールバック用） */
     .muted{color:#666}
     #adminbar{max-width:900px;margin:8px auto 0;display:flex;justify-content:flex-end}
   </style>
@@ -20,51 +21,46 @@
 <body>
   <h1 style="text-align:center;margin:16px 0">Reversi Lobby</h1>
 
-  <div id="adminbar" hidden>
+  <!-- テスト用：常時表示（本番で消す想定） -->
+  <div id="adminbar">
     <button id="btn-reset" class="btn">Reset DO</button>
   </div>
 
   <div class="room-grid" id="rooms"></div>
 
   <script>
-    // ---- i18n loader (観戦 / Vacant だけ使う) ----
-    const I18N = { spectate:'Spectate', vacant:'vacant' };
+    // ===== i18n（観戦/空き） =====
+    const I18N = { spectate: 'Spectate', vacant: 'vacant' };
     (async () => {
       try {
         const res = await fetch('/i18n/system_messages.json');
         const all = await res.json();
         const lang = (navigator.language || 'en').slice(0,2);
-        // 柔軟にキーを探す（仕様の最小要件に合わせて）
-        const pick = (obj, k1, k2, fallback) =>
-          (obj[k1] && (obj[k1][lang] || obj[k1].en)) ||
-          (obj[k2] && (obj[k2][lang] || obj[k2].en)) || fallback;
 
-        I18N.spectate = pick(all, 'lobby_spectate', 'spectate', I18N.spectate);
-        I18N.vacant   = pick(all, 'lobby_vacant',   'vacant',   I18N.vacant);
+        function pick(obj, keys, fallback) {
+          for (const k of keys) {
+            if (obj[k]) return obj[k][lang] || obj[k].en || fallback;
+          }
+          return fallback;
+        }
 
-        // 既に描画済みの観戦リンクを差し替え
+        I18N.spectate = pick(all, ['lobby_spectate','spectate'], I18N.spectate);
+        I18N.vacant   = pick(all, ['lobby_vacant','vacant'], I18N.vacant);
+
+        // 既に描画済みがあれば差し替え
         document.querySelectorAll('[data-i18n="spectate"]').forEach(a => a.textContent = I18N.spectate);
         document.querySelectorAll('[data-i18n="vacant-b"]').forEach(e => e.textContent = I18N.vacant);
         document.querySelectorAll('[data-i18n="vacant-w"]').forEach(e => e.textContent = I18N.vacant);
       } catch {}
     })();
 
-    // ---- Admin（?admin=1 のときだけ表示）----
-    const params = new URLSearchParams(location.search);
-    if (params.get('admin') === '1') {
-      const bar = document.getElementById('adminbar');
-      bar.hidden = false;
-      document.getElementById('btn-reset').addEventListener('click', async () => {
-        try {
-          const r = await fetch('/api/admin', { method:'POST' });
-          alert(r.ok ? 'DO reset: OK' : ('DO reset: ' + r.status));
-        } finally {
-          location.reload();
-        }
-      });
-    }
+    // ===== Admin Reset（ワンボタン / 204 応答想定） =====
+    document.getElementById('btn-reset').addEventListener('click', async () => {
+      try { await fetch('/api/admin', { method:'POST' }); } catch {}
+      location.reload();
+    });
 
-    // ---- ロビー UI ----
+    // ===== ロビー描画 =====
     const roomsEl = document.getElementById('rooms');
     const RNUMS = [1,2,3,4];
 
@@ -96,33 +92,31 @@
       });
     }
 
-    function setClass(elId, on) {
-      const el = document.getElementById(elId);
-      if (!el) return;
-      el.classList.toggle('disabled', !!on);
-      // disabled風に見せるだけ（サーバ側でも埋まっていれば観戦へフォールバックする仕様）
-    }
-
-    function setText(elId, text) {
-      const el = document.getElementById(elId);
+    function setText(id, text) {
+      const el = document.getElementById(id);
       if (el) el.textContent = text;
+    }
+    function setDim(id, on) {
+      const el = document.getElementById(id);
+      if (!el) return;
+      el.classList.toggle('dim', !!on);
     }
 
     function applySnapshotAll(data) {
       if (!data || !Array.isArray(data.rooms)) return;
       data.rooms.forEach(r => {
         const n = r.room;
-        // v1.1 正式キー
-        let occB = typeof r.black === 'boolean' ? r.black : undefined;
-        let occW = typeof r.white === 'boolean' ? r.white : undefined;
-        let watchers = typeof r.watchers === 'number' ? r.watchers : undefined;
-        // 旧1.0 互換
+        // v1.1 正式キー（占有）
+        let occB = (typeof r.black === 'boolean') ? r.black : undefined;
+        let occW = (typeof r.white === 'boolean') ? r.white : undefined;
+        let watchers = (typeof r.watchers === 'number') ? r.watchers : undefined;
+        // 旧キー（欠落時のみ補完）
         if (occB === undefined && 'blackVacant' in r) occB = !r.blackVacant;
         if (occW === undefined && 'whiteVacant' in r) occW = !r.whiteVacant;
         if (watchers === undefined && 'watching' in r) watchers = r.watching;
 
-        setClass(`r${n}-b`, !!occB);
-        setClass(`r${n}-w`, !!occW);
+        setDim(`r${n}-b`, !!occB);
+        setDim(`r${n}-w`, !!occW);
         setText(`r${n}-v-b`, (!!occB ? 'occupied' : I18N.vacant));
         setText(`r${n}-v-w`, (!!occW ? 'occupied' : I18N.vacant));
         setText(`r${n}-watch`, `👀 ${watchers ?? 0}`);
@@ -130,10 +124,10 @@
       });
     }
 
-    // 初期描画
+    // 起動
     renderCards();
 
-    // SSE（lobby）
+    // ロビーSSE（/?room=all）
     const es = new EventSource('/?room=all');
     es.addEventListener('room_state', (ev) => {
       try { applySnapshotAll(JSON.parse(ev.data)); } catch {}
