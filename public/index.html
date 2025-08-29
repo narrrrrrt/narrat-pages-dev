@@ -6,32 +6,71 @@
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <link href="/css/style.css" rel="stylesheet" />
   <style>
-    /* 既存 style.css 優先。最低限のフォールバックだけ */
-    .room-grid{display:grid;grid-template-columns:repeat(2,minmax(260px,1fr));gap:16px;margin:16px auto;max-width:800px}
+    .room-grid{display:grid;grid-template-columns:repeat(2,minmax(260px,1fr));gap:16px;margin:16px auto;max-width:900px}
     .card{border:1px solid #ddd;border-radius:10px;padding:12px}
     .hdr{display:flex;justify-content:space-between;align-items:center;margin-bottom:8px}
     .badges span{display:inline-block;border-radius:8px;padding:2px 8px;margin-left:6px;font-size:.85em;background:#f4f4f4}
     .btns{display:flex;gap:8px;flex-wrap:wrap;margin-top:8px}
-    .btn{padding:8px 12px;border-radius:6px;border:1px solid #ccc;background:#fff;cursor:pointer}
-    .btn[disabled]{opacity:.5;cursor:not-allowed}
+    .btn{padding:8px 12px;border-radius:6px;border:1px solid #ccc;background:#fff;text-decoration:none;display:inline-block}
+    .disabled{opacity:.5;pointer-events:none}
     .muted{color:#666}
+    #adminbar{max-width:900px;margin:8px auto 0;display:flex;justify-content:flex-end}
   </style>
 </head>
 <body>
   <h1 style="text-align:center;margin:16px 0">Reversi Lobby</h1>
 
+  <div id="adminbar" hidden>
+    <button id="btn-reset" class="btn">Reset DO</button>
+  </div>
+
   <div class="room-grid" id="rooms"></div>
 
   <script>
-    // v1.1.3 ロビーSSE: { rooms: [ {room,status,black,white,watchers, ... } ] } を正とする
-    // ※ 後方互換: 旧1.0の blackVacant/whiteVacant, watching が来た場合だけ補完
-    const RNUMS = [1,2,3,4];
-    const roomsEl = document.getElementById('rooms');
+    // ---- i18n loader (観戦 / Vacant だけ使う) ----
+    const I18N = { spectate:'Spectate', vacant:'vacant' };
+    (async () => {
+      try {
+        const res = await fetch('/i18n/system_messages.json');
+        const all = await res.json();
+        const lang = (navigator.language || 'en').slice(0,2);
+        // 柔軟にキーを探す（仕様の最小要件に合わせて）
+        const pick = (obj, k1, k2, fallback) =>
+          (obj[k1] && (obj[k1][lang] || obj[k1].en)) ||
+          (obj[k2] && (obj[k2][lang] || obj[k2].en)) || fallback;
 
-    // 初期カードを生成（存在しない場合のみ）
-    function ensureCards() {
+        I18N.spectate = pick(all, 'lobby_spectate', 'spectate', I18N.spectate);
+        I18N.vacant   = pick(all, 'lobby_vacant',   'vacant',   I18N.vacant);
+
+        // 既に描画済みの観戦リンクを差し替え
+        document.querySelectorAll('[data-i18n="spectate"]').forEach(a => a.textContent = I18N.spectate);
+        document.querySelectorAll('[data-i18n="vacant-b"]').forEach(e => e.textContent = I18N.vacant);
+        document.querySelectorAll('[data-i18n="vacant-w"]').forEach(e => e.textContent = I18N.vacant);
+      } catch {}
+    })();
+
+    // ---- Admin（?admin=1 のときだけ表示）----
+    const params = new URLSearchParams(location.search);
+    if (params.get('admin') === '1') {
+      const bar = document.getElementById('adminbar');
+      bar.hidden = false;
+      document.getElementById('btn-reset').addEventListener('click', async () => {
+        try {
+          const r = await fetch('/api/admin', { method:'POST' });
+          alert(r.ok ? 'DO reset: OK' : ('DO reset: ' + r.status));
+        } finally {
+          location.reload();
+        }
+      });
+    }
+
+    // ---- ロビー UI ----
+    const roomsEl = document.getElementById('rooms');
+    const RNUMS = [1,2,3,4];
+
+    function renderCards() {
+      roomsEl.innerHTML = '';
       RNUMS.forEach(n => {
-        if (document.getElementById(`room-${n}`)) return;
         const card = document.createElement('div');
         card.className = 'card';
         card.id = `room-${n}`;
@@ -44,85 +83,62 @@
             </div>
           </div>
           <div class="btns">
-            <button class="btn" id="r${n}-b" data-room="${n}" data-seat="black">● Join (Black)</button>
-            <button class="btn" id="r${n}-w" data-room="${n}" data-seat="white">○ Join (White)</button>
-            <a class="btn" id="r${n}-obs" href="/?seat=observer&room=${n}">Spectate</a>
+            <a class="btn" id="r${n}-b" href="/?seat=black&room=${n}">● Join (Black)</a>
+            <a class="btn" id="r${n}-w" href="/?seat=white&room=${n}">○ Join (White)</a>
+            <a class="btn" id="r${n}-obs" href="/?seat=observer&room=${n}" data-i18n="spectate">${I18N.spectate}</a>
           </div>
-          <div class="muted" id="r${n}-hint"></div>
+          <div class="muted">
+            Black: <span id="r${n}-v-b" data-i18n="vacant-b">${I18N.vacant}</span>
+            / White: <span id="r${n}-v-w" data-i18n="vacant-w">${I18N.vacant}</span>
+          </div>
         `;
         roomsEl.appendChild(card);
       });
     }
 
-    function setDisabled(id, disabled) {
-      const el = document.getElementById(id);
-      if (el) el.disabled = !!disabled;
+    function setClass(elId, on) {
+      const el = document.getElementById(elId);
+      if (!el) return;
+      el.classList.toggle('disabled', !!on);
+      // disabled風に見せるだけ（サーバ側でも埋まっていれば観戦へフォールバックする仕様）
     }
 
-    function setText(id, text) {
-      const el = document.getElementById(id);
+    function setText(elId, text) {
+      const el = document.getElementById(elId);
       if (el) el.textContent = text;
     }
 
-    // クリックで /?seat=...&room=... へ（仕様準拠）
-    function wireJoinButtons() {
-      roomsEl.addEventListener('click', (ev) => {
-        const t = ev.target;
-        if (!(t instanceof HTMLElement)) return;
-        const seat = t.getAttribute('data-seat');
-        const room = t.getAttribute('data-room');
-        if (!seat || !room) return;
-        location.href = `/?seat=${seat}&room=${room}`;
-      });
-    }
-
-    // 受信スナップショットでUI反映
     function applySnapshotAll(data) {
       if (!data || !Array.isArray(data.rooms)) return;
       data.rooms.forEach(r => {
         const n = r.room;
         // v1.1 正式キー
-        let occupiedB = typeof r.black === 'boolean' ? r.black : undefined;
-        let occupiedW = typeof r.white === 'boolean' ? r.white : undefined;
-        let watchers  = typeof r.watchers === 'number' ? r.watchers : undefined;
+        let occB = typeof r.black === 'boolean' ? r.black : undefined;
+        let occW = typeof r.white === 'boolean' ? r.white : undefined;
+        let watchers = typeof r.watchers === 'number' ? r.watchers : undefined;
+        // 旧1.0 互換
+        if (occB === undefined && 'blackVacant' in r) occB = !r.blackVacant;
+        if (occW === undefined && 'whiteVacant' in r) occW = !r.whiteVacant;
+        if (watchers === undefined && 'watching' in r) watchers = r.watching;
 
-        // 旧1.0 互換フィールド（欠落時のみ補完）
-        if (occupiedB === undefined && 'blackVacant' in r) occupiedB = !r.blackVacant;
-        if (occupiedW === undefined && 'whiteVacant' in r) occupiedW = !r.whiteVacant;
-        if (watchers  === undefined && 'watching' in r)   watchers = r.watching;
-
-        // UI更新
-        setDisabled(`r${n}-b`, !!occupiedB);
-        setDisabled(`r${n}-w`, !!occupiedW);
+        setClass(`r${n}-b`, !!occB);
+        setClass(`r${n}-w`, !!occW);
+        setText(`r${n}-v-b`, (!!occB ? 'occupied' : I18N.vacant));
+        setText(`r${n}-v-w`, (!!occW ? 'occupied' : I18N.vacant));
         setText(`r${n}-watch`, `👀 ${watchers ?? 0}`);
         setText(`r${n}-status`, r.status || 'waiting');
-
-        // 補助ヒント
-        const hint = document.getElementById(`r${n}-hint`);
-        if (hint) {
-          hint.textContent = `Black: ${occupiedB ? 'occupied' : 'vacant'} / White: ${occupiedW ? 'occupied' : 'vacant'}`;
-        }
       });
     }
 
-    // --- 起動 ---
-    ensureCards();
-    wireJoinButtons();
+    // 初期描画
+    renderCards();
 
-    // EventSource は自動で Accept: text/event-stream を付ける
+    // SSE（lobby）
     const es = new EventSource('/?room=all');
     es.addEventListener('room_state', (ev) => {
-      try {
-        const data = JSON.parse(ev.data);
-        applySnapshotAll(data);
-      } catch (e) {
-        console.warn('parse room_state(all) failed', e);
-      }
+      try { applySnapshotAll(JSON.parse(ev.data)); } catch {}
     });
-    es.onerror = () => {
-      // 切断時：ブラウザの自動再接続に任せる（指数バックオフ）。特別な処理は不要。
-      console.warn('lobby sse error');
-    };
+    es.onerror = () => { /* 自動再接続に任せる */ };
   </script>
 </body>
 </html>
