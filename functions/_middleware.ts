@@ -1,4 +1,4 @@
-// functions/_middleware.ts
+// functions/_middleware.ts o
 export const onRequest: PagesFunction<{ REVERSI_HUB: DurableObjectNamespace }> = async (ctx) => {
   const { request, env, next } = ctx;
   const url = new URL(request.url);
