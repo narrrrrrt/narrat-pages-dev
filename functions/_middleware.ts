@@ -1,55 +1,29 @@
 // functions/_middleware.ts
-// Pages Functions middleware: static files are served by Pages,
-// SSE/API は Durable Object(REVERSI_HUB) にプロキシする。
-
-interface Env {
-  REVERSI_HUB: DurableObjectNamespace;
-}
-
-export const onRequest: PagesFunction<Env> = async (ctx) => {
+export const onRequest: PagesFunction<{ REVERSI_HUB: DurableObjectNamespace }> = async (ctx) => {
   const { request, env, next } = ctx;
   const url = new URL(request.url);
-  const accept = request.headers.get('Accept') || '';
-  const isSSE = accept.includes('text/event-stream');
+  const accept = request.headers.get('accept') || '';
 
-  // DO へそのまま転送
-  const passToDO = async (req: Request) => {
+  const forwardToDO = async () => {
     const id = env.REVERSI_HUB.idFromName('global');
     const stub = env.REVERSI_HUB.get(id);
-    return stub.fetch(req);
+    const req = new Request(url.toString(), request);
+    const res = await stub.fetch(req);
+    // SSEはキャッシュさせない
+    if ((res.headers.get('content-type') || '').includes('text/event-stream')) {
+      const h = new Headers(res.headers);
+      h.set('cache-control', 'no-store');
+      return new Response(res.body, { status: res.status, headers: h });
+    }
+    return res;
   };
 
-  // DO へパスを書き換えて転送（/ → /sse 等）
-  const passToDOWithPath = async (req: Request, newPath: string) => {
-    const u2 = new URL(req.url);
-    u2.pathname = newPath;
-    const id = env.REVERSI_HUB.idFromName('global');
-    const stub = env.REVERSI_HUB.get(id);
-    return stub.fetch(new Request(u2.toString(), {
-      method: req.method,
-      headers: req.headers,
-      body: req.method === 'GET' || req.method === 'HEAD' ? undefined : req.body,
-      redirect: 'manual',
-    }));
-  };
+  // 1) API は常に DO
+  if (url.pathname.startsWith('/api/')) return forwardToDO();
 
-  // --- SSE: ロビー集約（/?room=all）とルーム個別（/sse）の両方を許可 ---
-  if (isSSE) {
-    // ルーム個別（reverse.html からの /sse?room=..&seat=..）
-    if (url.pathname === '/sse') {
-      return passToDO(request);
-    }
-    // ロビー集約（index.html からの /?room=all）
-    if (url.pathname === '/' && url.searchParams.has('room')) {
-      return passToDOWithPath(request, '/sse');
-    }
-  }
+  // 2) SSE（ロビー/ルーム）は Accept で判定して DO
+  if (accept.includes('text/event-stream')) return forwardToDO();
 
-  // --- API: /api/* はすべて DO にフォワード（join/move/leave/hb/admin など） ---
-  if (url.pathname.startsWith('/api/')) {
-    return passToDO(request);
-  }
-
-  // --- それ以外は Pages の静的配信へ ---
+  // 3) それ以外は静的
   return next();
 };
