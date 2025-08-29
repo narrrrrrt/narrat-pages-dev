@@ -2,120 +2,127 @@
 <html lang="en">
 <head>
   <meta charset="utf-8" />
-  <meta name="viewport" content="width=device-width,initial-scale=1" />
-  <title>Reversi Lobby 0.57</title>
-  <link rel="stylesheet" href="/style.css" />
+  <title>Reversi Lobby</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <link href="/css/style.css" rel="stylesheet" />
   <style>
-    :root { color-scheme: light dark; }
-    body { max-width: 980px; margin: 0 auto; padding: 16px; background:#fff; color:#111; }
-    h1 { margin: 8px 0 16px; }
-    .stack { display:flex; flex-direction:column; gap:16px; }
-    .card { border: 1px solid #d4d7dd; border-radius: 12px; padding: 16px; background: #fafbfc; box-shadow: 0 1px 2px rgba(0,0,0,.03); }
-    .row { margin-top: 8px; display:flex; gap:10px; flex-wrap:wrap; }
-    .btn { display:inline-block; padding:8px 12px; border-radius:10px; border:1px solid #2b6cb0; color:#2b6cb0; background:#eef6ff; text-decoration:none; font-weight:600; transition: transform .02s ease, filter .15s ease; }
-    .btn:active { transform: translateY(1px); }
-    .btn:hover { filter: brightness(1.04); }
-    .btn[disabled], .btn[aria-disabled="true"] { border-color:#c2c7cf; color:#a5adb8; background:#f3f5f7; pointer-events:none; }
-    .pill { display:inline-block; padding:2px 8px; border-radius:999px; font-size:12px; background:#eef2f7; border:1px solid #d4d7dd; color:#445; }
-    .muted { opacity:.85; font-size:14px; }
-    .admin { margin: 12px 0 20px; padding: 12px; border:1px dashed #c9ced6; border-radius:10px; background:#f7fafc; }
-    .btn-danger { border-color:#c53030; color:#c53030; background:#fff5f5; }
-    .debug { margin-top: 24px; padding: 12px; border:1px solid #e2e8f0; border-radius:10px; background:#fbfdff; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; color:#223; }
-    .debug pre { white-space: pre-wrap; word-break: break-word; margin:8px 0 0; font-size:12px; line-height:1.4; }
+    /* 既存 style.css 優先。最低限のフォールバックだけ */
+    .room-grid{display:grid;grid-template-columns:repeat(2,minmax(260px,1fr));gap:16px;margin:16px auto;max-width:800px}
+    .card{border:1px solid #ddd;border-radius:10px;padding:12px}
+    .hdr{display:flex;justify-content:space-between;align-items:center;margin-bottom:8px}
+    .badges span{display:inline-block;border-radius:8px;padding:2px 8px;margin-left:6px;font-size:.85em;background:#f4f4f4}
+    .btns{display:flex;gap:8px;flex-wrap:wrap;margin-top:8px}
+    .btn{padding:8px 12px;border-radius:6px;border:1px solid #ccc;background:#fff;cursor:pointer}
+    .btn[disabled]{opacity:.5;cursor:not-allowed}
+    .muted{color:#666}
   </style>
 </head>
 <body>
-  <h1>Reversi Lobby</h1>
+  <h1 style="text-align:center;margin:16px 0">Reversi Lobby</h1>
 
-  <div id="admin" class="admin" style="display:none">
-    <strong>Admin</strong><br/>
-    <button id="btnInit" class="btn btn-danger">Initialize database (reset rooms)</button>
-    <span id="adminMsg" class="muted" style="margin-left:8px;"></span>
-  </div>
-
-  <div class="stack" id="rooms"></div>
-
-  <div class="debug" id="debug">
-    <div><strong>Debug (live)</strong> -- snapshot from <code>/?room=all</code></div>
-    <div class="muted" id="dbgMeta">--</div>
-    <pre id="dbgJson">--</pre>
-  </div>
+  <div class="room-grid" id="rooms"></div>
 
   <script>
-  (function(){
-    const qs = new URLSearchParams(location.search);
-    const showAdmin = qs.get('admin') === '1';
-    const adminBox = document.getElementById('admin');
-    if (showAdmin) {
-      adminBox.style.display = '';
-      document.getElementById('btnInit').onclick = async () => {
-        const r = await fetch('/api/admin', { method:'POST' });
-        document.getElementById('adminMsg').textContent = r.ok ? 'Done.' : 'Failed.';
-      };
-    }
-
+    // v1.1.3 ロビーSSE: { rooms: [ {room,status,black,white,watchers, ... } ] } を正とする
+    // ※ 後方互換: 旧1.0の blackVacant/whiteVacant, watching が来た場合だけ補完
+    const RNUMS = [1,2,3,4];
     const roomsEl = document.getElementById('rooms');
-    const dbgMeta = document.getElementById('dbgMeta');
-    const dbgJson = document.getElementById('dbgJson');
 
-    function card(n, seats, watchers){
-      const s = seats || {black:false, white:false};
-      const hideTaken = true;
-      const btnBlack = hideTaken && s.black ? '' :
-        `<a class="btn" href="/reverse.html?room=${n}&seat=black"  ${s.black ? 'aria-disabled="true" disabled':''}>Black</a>`;
-      const btnWhite = hideTaken && s.white ? '' :
-        `<a class="btn" href="/reverse.html?room=${n}&seat=white"  ${s.white ? 'aria-disabled="true" disabled':''}>White</a>`;
-      return `
-        <div class="card" id="room-${n}">
-          <div style="display:flex;align-items:center;justify-content:space-between;gap:8px;">
-            <h3 style="margin:0;">Room ${n}</h3>
-            <span class="pill">Watching: <span class="w">${watchers||0}</span></span>
+    // 初期カードを生成（存在しない場合のみ）
+    function ensureCards() {
+      RNUMS.forEach(n => {
+        if (document.getElementById(`room-${n}`)) return;
+        const card = document.createElement('div');
+        card.className = 'card';
+        card.id = `room-${n}`;
+        card.innerHTML = `
+          <div class="hdr">
+            <strong>Room ${n}</strong>
+            <div class="badges">
+              <span id="r${n}-status" class="muted">waiting</span>
+              <span id="r${n}-watch">👀 0</span>
+            </div>
           </div>
-          <div class="row">
-            ${btnBlack}
-            ${btnWhite}
-            <a class="btn" href="/reverse.html?room=${n}&seat=observer">Spectator</a>
+          <div class="btns">
+            <button class="btn" id="r${n}-b" data-room="${n}" data-seat="black">● Join (Black)</button>
+            <button class="btn" id="r${n}-w" data-room="${n}" data-seat="white">○ Join (White)</button>
+            <a class="btn" id="r${n}-obs" href="/?seat=observer&room=${n}">Spectate</a>
           </div>
-          <div class="muted" style="margin-top:4px;">
-            Seats: Black ${s.black ? 'occupied':'vacant'} / White ${s.white ? 'occupied':'vacant'}
-          </div>
-        </div>`;
-    }
-    roomsEl.innerHTML = [1,2,3,4].map(n => card(n)).join('');
-
-    function renderAll(pack){
-      const ts = pack.ts ? new Date(pack.ts).toLocaleTimeString() : new Date().toLocaleTimeString();
-      dbgMeta.textContent = `ts=${ts}`;
-      dbgJson.textContent = JSON.stringify(pack, null, 2);
-
-      for (const n of [1,2,3,4]){
-        const el = document.getElementById(`room-${n}`);
-        if (!el) continue;
-        const r = pack.rooms?.[n] || {};
-        const btnB = el.querySelector('[href*="seat=black"]');
-        const btnW = el.querySelector('[href*="seat=white"]');
-
-        if (btnB){
-          if (r.seats?.black){ btnB.setAttribute('aria-disabled','true'); btnB.setAttribute('disabled',''); btnB.style.display='none'; }
-          else { btnB.removeAttribute('aria-disabled'); btnB.removeAttribute('disabled'); btnB.style.display='inline-block'; }
-        }
-        if (btnW){
-          if (r.seats?.white){ btnW.setAttribute('aria-disabled','true'); btnW.setAttribute('disabled',''); btnW.style.display='none'; }
-          else { btnW.removeAttribute('aria-disabled'); btnW.removeAttribute('disabled'); btnW.style.display='inline-block'; }
-        }
-
-        el.querySelector('.w').textContent = r.watchers ?? 0;
-        el.querySelector('.muted').textContent =
-          `Seats: Black ${r.seats?.black ? 'occupied':'vacant'} / White ${r.seats?.white ? 'occupied':'vacant'}`;
-      }
+          <div class="muted" id="r${n}-hint"></div>
+        `;
+        roomsEl.appendChild(card);
+      });
     }
 
-    // ★ ロビーSSEを /?room=all に戻す（Accept: text/event-stream は中で付与される）
+    function setDisabled(id, disabled) {
+      const el = document.getElementById(id);
+      if (el) el.disabled = !!disabled;
+    }
+
+    function setText(id, text) {
+      const el = document.getElementById(id);
+      if (el) el.textContent = text;
+    }
+
+    // クリックで /?seat=...&room=... へ（仕様準拠）
+    function wireJoinButtons() {
+      roomsEl.addEventListener('click', (ev) => {
+        const t = ev.target;
+        if (!(t instanceof HTMLElement)) return;
+        const seat = t.getAttribute('data-seat');
+        const room = t.getAttribute('data-room');
+        if (!seat || !room) return;
+        location.href = `/?seat=${seat}&room=${room}`;
+      });
+    }
+
+    // 受信スナップショットでUI反映
+    function applySnapshotAll(data) {
+      if (!data || !Array.isArray(data.rooms)) return;
+      data.rooms.forEach(r => {
+        const n = r.room;
+        // v1.1 正式キー
+        let occupiedB = typeof r.black === 'boolean' ? r.black : undefined;
+        let occupiedW = typeof r.white === 'boolean' ? r.white : undefined;
+        let watchers  = typeof r.watchers === 'number' ? r.watchers : undefined;
+
+        // 旧1.0 互換フィールド（欠落時のみ補完）
+        if (occupiedB === undefined && 'blackVacant' in r) occupiedB = !r.blackVacant;
+        if (occupiedW === undefined && 'whiteVacant' in r) occupiedW = !r.whiteVacant;
+        if (watchers  === undefined && 'watching' in r)   watchers = r.watching;
+
+        // UI更新
+        setDisabled(`r${n}-b`, !!occupiedB);
+        setDisabled(`r${n}-w`, !!occupiedW);
+        setText(`r${n}-watch`, `👀 ${watchers ?? 0}`);
+        setText(`r${n}-status`, r.status || 'waiting');
+
+        // 補助ヒント
+        const hint = document.getElementById(`r${n}-hint`);
+        if (hint) {
+          hint.textContent = `Black: ${occupiedB ? 'occupied' : 'vacant'} / White: ${occupiedW ? 'occupied' : 'vacant'}`;
+        }
+      });
+    }
+
+    // --- 起動 ---
+    ensureCards();
+    wireJoinButtons();
+
+    // EventSource は自動で Accept: text/event-stream を付ける
     const es = new EventSource('/?room=all');
-    es.addEventListener('room_state', (ev)=>{
-      try { renderAll(JSON.parse(ev.data)); } catch(_){}
+    es.addEventListener('room_state', (ev) => {
+      try {
+        const data = JSON.parse(ev.data);
+        applySnapshotAll(data);
+      } catch (e) {
+        console.warn('parse room_state(all) failed', e);
+      }
     });
-  })();
+    es.onerror = () => {
+      // 切断時：ブラウザの自動再接続に任せる（指数バックオフ）。特別な処理は不要。
+      console.warn('lobby sse error');
+    };
   </script>
 </body>
 </html>
