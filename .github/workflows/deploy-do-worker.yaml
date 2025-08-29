@@ -1,13 +1,12 @@
-name: Deploy Cloudflare Pages (no-build)
+name: Deploy DO Worker
 
 on:
   push:
-    branches: ['**']
+    branches: ['**']                           # 必要なら ['main'] に
     paths:
-      - 'public/**'
-      - 'functions/**'
-      - '.github/workflows/deploy-pages.yaml'
-  workflow_dispatch: {}
+      - 'workers/do-worker/**'                 # DO のソース変更で発火
+      - '.github/workflows/deploy-do-worker.yaml'
+  workflow_dispatch: {}                        # 手動実行も可
 
 jobs:
   deploy:
@@ -17,12 +16,10 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Deploy Pages
+      - name: Deploy Durable Object
         uses: cloudflare/wrangler-action@v3
         with:
           apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-          command: >
-            pages deploy ./public
-            --project-name ${{ secrets.CF_PAGES_PROJECT }}
-            --branch main
+          workingDirectory: workers/do-worker   # wrangler.toml のある場所
+          command: deploy
