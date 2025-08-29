@@ -2,7 +2,7 @@ name: Deploy Cloudflare Pages (no-build)
 
 on:
   push:
-    branches: [ main ]
+    branches: ['**']
     paths:
       - 'public/**'
       - 'functions/**'
