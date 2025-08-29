@@ -6,7 +6,6 @@
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <link href="/css/style.css" rel="stylesheet" />
   <style>
-    /* 既存CSSがあればそちら優先。これはフォールバック用の軽い体裁だけ */
     .room-grid{display:grid;grid-template-columns:repeat(2,minmax(260px,1fr));gap:16px;margin:16px auto;max-width:900px}
     .card{border:1px solid #ddd;border-radius:10px;padding:12px}
     .hdr{display:flex;justify-content:space-between;align-items:center;margin-bottom:8px}
@@ -21,7 +20,7 @@
 <body>
   <h1 style="text-align:center;margin:16px 0">Reversi Lobby</h1>
 
-  <!-- テスト用：常時表示（本番で消す想定） -->
+  <!-- テスト用のリセット（本番で消す想定） -->
   <div id="adminbar">
     <button id="btn-reset" class="btn">Reset DO</button>
   </div>
@@ -29,32 +28,37 @@
   <div class="room-grid" id="rooms"></div>
 
   <script>
-    // ===== i18n（観戦/空き） =====
+    // ===== i18n（観戦 / 空き） =====
     const I18N = { spectate: 'Spectate', vacant: 'vacant' };
+
     (async () => {
       try {
         const res = await fetch('/i18n/system_messages.json');
         const all = await res.json();
         const lang = (navigator.language || 'en').slice(0,2);
 
+        // 実ファイル側のキー名揺れに広く対応（観戦の取りこぼし対策）
+        const spectateKeys = ['lobby_spectate','spectate','lobby_spectator','spectator','observe','watch'];
+        const vacantKeys   = ['lobby_vacant','vacant'];
+
         function pick(obj, keys, fallback) {
           for (const k of keys) {
-            if (obj[k]) return obj[k][lang] || obj[k].en || fallback;
+            if (obj && obj[k]) return obj[k][lang] || obj[k].en || fallback;
           }
           return fallback;
         }
 
-        I18N.spectate = pick(all, ['lobby_spectate','spectate'], I18N.spectate);
-        I18N.vacant   = pick(all, ['lobby_vacant','vacant'], I18N.vacant);
+        I18N.spectate = pick(all, spectateKeys, I18N.spectate);
+        I18N.vacant   = pick(all, vacantKeys,   I18N.vacant);
 
-        // 既に描画済みがあれば差し替え
+        // 既に描画済みのラベルを更新
         document.querySelectorAll('[data-i18n="spectate"]').forEach(a => a.textContent = I18N.spectate);
         document.querySelectorAll('[data-i18n="vacant-b"]').forEach(e => e.textContent = I18N.vacant);
         document.querySelectorAll('[data-i18n="vacant-w"]').forEach(e => e.textContent = I18N.vacant);
       } catch {}
     })();
 
-    // ===== Admin Reset（ワンボタン / 204 応答想定） =====
+    // ===== Admin Reset（204, 本文なし） =====
     document.getElementById('btn-reset').addEventListener('click', async () => {
       try { await fetch('/api/admin', { method:'POST' }); } catch {}
       location.reload();
@@ -79,8 +83,8 @@
             </div>
           </div>
           <div class="btns">
-            <a class="btn" id="r${n}-b" href="/?seat=black&room=${n}">● Join (Black)</a>
-            <a class="btn" id="r${n}-w" href="/?seat=white&room=${n}">○ Join (White)</a>
+            <a class="btn" id="r${n}-b"  href="/?seat=black&room=${n}">● Join (Black)</a>
+            <a class="btn" id="r${n}-w"  href="/?seat=white&room=${n}">○ Join (White)</a>
             <a class="btn" id="r${n}-obs" href="/?seat=observer&room=${n}" data-i18n="spectate">${I18N.spectate}</a>
           </div>
           <div class="muted">
@@ -92,15 +96,8 @@
       });
     }
 
-    function setText(id, text) {
-      const el = document.getElementById(id);
-      if (el) el.textContent = text;
-    }
-    function setDim(id, on) {
-      const el = document.getElementById(id);
-      if (!el) return;
-      el.classList.toggle('dim', !!on);
-    }
+    function setText(id, text){ const el=document.getElementById(id); if(el) el.textContent=text; }
+    function setDim(id, on){ const el=document.getElementById(id); if(el) el.classList.toggle('dim', !!on); }
 
     function applySnapshotAll(data) {
       if (!data || !Array.isArray(data.rooms)) return;
