@@ -1,4 +1,4 @@
-// public/js/reverse.js -- v1.1.3 (debug-join print)
+// public/js/reverse.js -- v1.1.4 (debug: log response header/body)
 
 (function () {
   // ---- tiny utils ---------------------------------------------------------
@@ -7,7 +7,7 @@
   function randId() { return Math.random().toString(16).slice(2, 10); }
   function enc(s) { return encodeURIComponent(s); }
 
-  // ---- i18n (最小; 既存の system_messages.json はそのまま) -------------
+  // ---- i18n (最小) --------------------------------------------------------
   let MSG = { opponent_left: 'Opponent left' };
   fetch('/i18n/system_messages.json').then(r => r.json()).then(all => {
     const lang = (navigator.language || 'en').slice(0, 2);
@@ -29,8 +29,8 @@
   $('#room-no').textContent = String(room);
 
   // ---- board rendering ----------------------------------------------------
-  const elBoard = $('#board');
-  const elGrid  = $('#grid');
+  const elBoard  = $('#board');
+  const elGrid   = $('#grid');
   const elStones = $('#stones');
   const elLegals = $('#legals');
 
@@ -50,7 +50,7 @@
 
   function renderBoard(board, legal) {
     if (!board || !Array.isArray(board.stones)) return;
-    const map = {}; // "d3": true
+    const map = {};
     (legal || []).forEach(p => (map[p] = true));
 
     // stones
@@ -98,35 +98,47 @@
     const ts = new Date().toLocaleTimeString();
     const head = title ? `[${ts}] ${title}\n` : '';
     const body = obj !== undefined ? (typeof obj === 'string' ? obj : JSON.stringify(obj, null, 2)) : '';
-    dbgEl.textContent = (head + body + '\n\n' + dbgEl.textContent).slice(0, 10000); // 直近を上に
+    dbgEl.textContent = (head + body + '\n\n' + dbgEl.textContent).slice(0, 12000);
   }
 
   // ---- join / heartbeat / sse --------------------------------------------
   async function join() {
     const body = { action: 'join', room, seat: wantSeat, sse: sseId };
-
-    // ★ デバッグ: 送信ボディを画面に出す
     dbg('JOIN body', body);
 
-    const res = await fetch('/api/action', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(body)
-    });
+    let res;
+    try {
+      res = await fetch('/api/action', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body)
+      });
+    } catch (e) {
+      dbg('JOIN fetch error', String(e));
+      return;
+    }
 
-    // token はヘッダ
+    // header
     const tk = res.headers.get('X-Play-Token') || '';
     if (tk) token = tk;
+    dbg('JOIN response header', { status: res.status, token });
 
-    // スナップショット（部屋用）
-    const snap = await res.json().catch(() => null);
+    // body(raw -> json)
+    let raw = '';
+    try { raw = await res.text(); } catch (e) {}
+    dbg('JOIN response raw(<=512B)', raw.slice(0, 512));
+
+    let snap = null;
+    try { snap = raw ? JSON.parse(raw) : null; } catch (e) {
+      dbg('JOIN JSON parse error', String(e));
+    }
+
     if (snap && snap.seat) mySeat = snap.seat;
     applySnapshot(snap);
 
-    // join 後: SSE 接続 & Heartbeat 開始
+    // SSE & HB
     startSse();
     startHeartbeat();
-    // Back/遷移で leave（Beacon）
     window.addEventListener('pagehide', beaconLeave);
   }
 
@@ -148,6 +160,7 @@
     const url = `/?room=${room}&seat=${enc(mySeat || 'observer')}&sse=${enc(sseId)}`;
     const es = new EventSource(url);
     es.addEventListener('room_state', ev => {
+      dbg('SSE event room_state (len)', String(ev.data?.length ?? 0));
       try {
         const snap = JSON.parse(ev.data);
         applySnapshot(snap);
@@ -161,14 +174,11 @@
   // ---- snapshot -> UI -----------------------------------------------------
   function applySnapshot(snap) {
     if (!snap) return;
-    // HUD
     $('#seat-now').textContent = snap.seat || mySeat || '-';
     $('#status').textContent = snap.status || '-';
     $('#turn').textContent = snap.turn === 'black' ? '●'
                        : snap.turn === 'white' ? '○' : '–';
     $('#watchers').textContent = String(snap.watchers ?? 0);
-
-    // board
     if (snap.board) renderBoard(snap.board, snap.legal || []);
   }
 
