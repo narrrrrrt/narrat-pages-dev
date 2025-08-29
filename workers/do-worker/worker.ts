@@ -1,4 +1,4 @@
-// workers/do-worker/worker.ts  -- v1.1.2 (HB/短TTL監視, leave=204, SSE ping disabled)
+// workers/do-worker/worker.ts  -- v1.1.2 (HB=204, LEAVE=204, 短TTL監視, SSE ping disabled)
 import { json, sseHeaders, encoder, tokShort, genToken, initialBoard } from './utils';
 
 type Seat = 'black' | 'white' | 'observer';
@@ -8,13 +8,12 @@ type Client = { controller: ReadableStreamDefaultController; seat: Seat; room: n
 
 // ざっくりSログ（REVERSIタグ）
 function slog(type: string, fields: Record<string, any> = {}) {
-  try {
-    console.log(JSON.stringify({ log: 'REVERSI', type, ...fields }));
-  } catch {}
+  try { console.log(JSON.stringify({ log: 'REVERSI', type, ...fields })); } catch {}
 }
 
 export class ReversiHub {
   state: DurableObjectState;
+
   rooms = new Map<number, any>();
   tokenMap = new Map<string, TokenInfo>();
   sseMap = new Map<string, TokenInfo>();
@@ -50,8 +49,8 @@ export class ReversiHub {
 
     // API
     if (url.pathname === '/action' && req.method === 'POST') return this.handleAction(req);
-    if (url.pathname === '/move' && req.method === 'POST') return this.handleMove(req);
-    if (url.pathname === '/admin' && req.method === 'POST') {
+    if (url.pathname === '/move'   && req.method === 'POST') return this.handleMove(req);
+    if (url.pathname === '/admin'  && req.method === 'POST') {
       for (const n of [1, 2, 3, 4]) this.rooms.set(n, this.newRoom());
       slog('ADMIN_RESET', {});
       this.broadcastLobby();
@@ -72,9 +71,7 @@ export class ReversiHub {
         if (this.lobbyClients.size === 1) this.startPinger(this.lobbyClients); // no-op
         slog('SSE_LOBBY_ADD', { total: this.lobbyClients.size });
       },
-      cancel: () => {
-        slog('SSE_LOBBY_CANCEL', {});
-      },
+      cancel: () => { slog('SSE_LOBBY_CANCEL', {}); },
     });
     return new Response(stream, sseHeaders());
   }
@@ -90,9 +87,7 @@ export class ReversiHub {
         if (clients.size === 1) this.startPinger(clients); // no-op
         slog('SSE_ROOM_ADD', { room, seat, sseId, total: clients.size });
       },
-      cancel: () => {
-        slog('SSE_ROOM_CANCEL', { room, seat, total: this.roomClients.get(room)!.size });
-      },
+      cancel: () => { slog('SSE_ROOM_CANCEL', { room, seat, total: this.roomClients.get(room)!.size }); },
     });
     return new Response(stream, sseHeaders());
   }
@@ -176,7 +171,7 @@ export class ReversiHub {
     return new Response('Bad Request', { status: 400 });
   }
 
-  // ---- /move ----
+  // ---- /move ----（スナップショット返す。UI更新はSSE）
   async handleMove(req: Request): Promise<Response> {
     const body = await req.json().catch(() => ({}));
     const room = Math.max(1, Math.min(4, parseInt(body.room, 10) || 1));
@@ -202,7 +197,7 @@ export class ReversiHub {
     if (seat === 'black' && !r.firstMoveLoggedBlack) { slog('MOVE_FIRST_BLACK', { room, pos }); r.firstMoveLoggedBlack = true; }
     if (seat === 'white' && !r.firstMoveLoggedWhite) { slog('MOVE_FIRST_WHITE', { room, pos }); r.firstMoveLoggedWhite = true; }
 
-    // 手番交代
+    // 手番交代 & 終了/パス判定
     const opp: Seat = seat === 'black' ? 'white' : 'black';
     r.turn = opp;
 
@@ -277,13 +272,11 @@ export class ReversiHub {
     const r = this.rooms.get(info.room)!;
     if (info.seat === 'black' && r.black) {
       slog('LEAVE_BLACK', { room: info.room });
-      this.tokenMap.delete(r.black);
-      r.black = undefined;
+      this.tokenMap.delete(r.black); r.black = undefined;
     }
     if (info.seat === 'white' && r.white) {
       slog('LEAVE_WHITE', { room: info.room });
-      this.tokenMap.delete(r.white);
-      r.white = undefined;
+      this.tokenMap.delete(r.white); r.white = undefined;
     }
     if (info.sseId) this.sseMap.delete(info.sseId);
 
@@ -388,8 +381,7 @@ export class ReversiHub {
   }
 
   at(board: { size: number; stones: string[] }, x: number, y: number): string {
-    return board.stones[y][x];
-    // '-' | 'B' | 'W'
+    return board.stones[y][x]; // '-' | 'B' | 'W'
   }
 
   set(board: { size: number; stones: string[] }, x: number, y: number, v: 'B' | 'W' | '-') {
