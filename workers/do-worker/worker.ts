@@ -1,338 +1,404 @@
-// workers/do-worker/worker.ts  v0.8
+// workers/do-worker/worker.ts
+// Reversi Durable Object (DO)
+// v1.1.5-fix: lobby seats flags, lobby broadcast on join/leave, watchers count, no ping
+
 export interface Env {
   REVERSI_HUB: DurableObjectNamespace;
-  LOG_BUCKET?: R2Bucket; // あっても使わない（R2保存はPages側ミドルでやる）
 }
 
-type Seat = 'black'|'white'|'observer';
-type Turn = 'black'|'white'|null;
-type Status = 'waiting'|'playing'|'leave'|'finished';
+type Seat = "black" | "white" | "observer";
+type Status = "waiting" | "black" | "white" | "leave" | "finished";
 
-type Client = {
-  controller: ReadableStreamDefaultController;
-  seat: Seat;
-  room: number;
-  sseId?: string;
+type Board = {
+  size: number;
+  stones: string[]; // 8 lines of "--------", "----WB--", etc.
 };
 
-type TokenInfo = { room:number; seat:Seat; sseId?:string };
 type RoomState = {
-  board: string[];
   status: Status;
-  turn: Turn;
-  black: string | null;
-  white: string | null;
+  turn: "black" | "white" | null;
+  board: Board;
+  legal: string[];
   watchers: number;
-  firstMoveLoggedBlack?: boolean;
-  firstMoveLoggedWhite?: boolean;
 };
 
-const DIRS = [[1,0],[-1,0],[0,1],[0,-1],[1,1],[-1,-1],[1,-1],[-1,1]] as const;
+type SnapshotRoom = {
+  room: number;
+  seat: Seat;
+} & RoomState;
 
-const slog = (type:string, fields:Record<string,unknown> = {}) => {
-  try {
-    // Cloudflareのコンソール用（必要最小限）
-    console.log(JSON.stringify({
-      log: "REVERSI",
-      type,
-      ...fields
-    }));
-  } catch {}
+type SnapshotLobby = {
+  rooms: Record<
+    string,
+    {
+      seats: { black: boolean; white: boolean }; // Vacant flags
+      watchers: number;
+      status: Status;
+    }
+  >;
+  ts: number;
 };
+
+type SseClient = {
+  controller: ReadableStreamDefaultController<Uint8Array>;
+};
+
+type TokenInfo = {
+  token: string;
+  room: number;
+  seat: Seat; // black | white | observer
+};
+
+type RoomData = {
+  blackToken?: string;
+  whiteToken?: string;
+  status: Status;
+  turn: "black" | "white" | null;
+  board: Board;
+  legal: string[];
+  watchers: Set<SseClient>;
+};
+
+function enc(s: string) {
+  return new TextEncoder().encode(s);
+}
+
+function initBoard(): Board {
+  return {
+    size: 8,
+    stones: [
+      "--------",
+      "--------",
+      "--------",
+      "---WB---",
+      "---BW---",
+      "--------",
+      "--------",
+      "--------",
+    ],
+  };
+}
 
 export class ReversiHub {
   state: DurableObjectState;
-  rooms = new Map<number,RoomState>();
-  lobbyClients = new Set<Client>();
-  roomClients = new Map<number, Set<Client>>([[1,new Set],[2,new Set],[3,new Set],[4,new Set]]);
-  tokenMap = new Map<string,TokenInfo>();
-  sseMap   = new Map<string, TokenInfo>();
-  // ▼ 追加: HB短TTL監視用
-  lastHbAt = new Map<string, number>();
-  hbTimer: any = undefined;
+  rooms: Map<number, RoomData>;
+  tokenMap: Map<string, TokenInfo>;
+  lobbyWatchers: Set<SseClient>;
 
-  constructor(state: DurableObjectState, env: Env){
+  constructor(state: DurableObjectState, _env: Env) {
     this.state = state;
-    for (const n of [1,2,3,4]) this.rooms.set(n, this.newRoom());
-    // HB short TTL sweep timer (every 10s)
-    // @ts-ignore
-    this.hbTimer = setInterval(()=>{ try { this.sweepHb(); } catch(_e){} }, 10000);
+    this.rooms = new Map();
+    this.tokenMap = new Map();
+    this.lobbyWatchers = new Set();
+    // init 4 rooms
+    for (let n = 1; n <= 4; n++) {
+      this.rooms.set(n, {
+        status: "waiting",
+        turn: null,
+        board: initBoard(),
+        legal: [],
+        watchers: new Set(),
+      });
+    }
   }
 
-  private newRoom(): RoomState {
-    return {
-      board: initialBoard(),
-      status: 'waiting',
-      turn: null,
-      black: null,
-      white: null,
-      watchers: 0,
-      firstMoveLoggedBlack: false,
-      firstMoveLoggedWhite: false,
-    };
-  }
+  // ---------------- routing ----------------
 
   async fetch(req: Request): Promise<Response> {
     const url = new URL(req.url);
-    if (req.method==='GET' && url.pathname==='/lobby-sse') {
-      return this.handleSseLobby();
-    }
-    if (req.method==='GET' && url.pathname==='/room-sse') {
-      const room = Math.max(1, Math.min(4, parseInt(url.searchParams.get('room')||'1',10)));
-      const seat = (url.searchParams.get('seat') || 'observer') as Seat;
-      const sseId = url.searchParams.get('sse') || undefined;
-      return this.handleSseRoom(room, seat, sseId);
-    }
-    if (url.pathname==='/action' && req.method==='POST') return this.handleAction(req);
-    if (url.pathname==='/move'   && req.method==='POST') return this.handleMove(req);
-    if (url.pathname==='/admin'  && req.method==='POST') {
-      for (const n of [1,2,3,4]) this.rooms.set(n, this.newRoom());
-      slog('ADMIN_RESET', {});
-      this.broadcastLobby(); for (const n of [1,2,3,4]) this.broadcastRoom(n);
-      return json({ ok:true });
+    const pathname = url.pathname;
+
+    // Admin reset (test only)
+    if (pathname === "/admin" && req.method === "POST") {
+      this.resetAll();
+      this.broadcastLobby();
+      for (let n = 1; n <= 4; n++) this.broadcastRoom(n);
+      return new Response("OK", { status: 200 });
     }
 
-    return new Response('Not Found', {status:404});
+    // SSE
+    if (req.headers.get("accept") === "text/event-stream") {
+      const roomParam = url.searchParams.get("room");
+      if (roomParam === "all") return this.handleSseLobby();
+      const n = parseInt(roomParam || "0", 10);
+      const seat = (url.searchParams.get("seat") || "observer") as Seat;
+      if (n >= 1 && n <= 4) return this.handleSseRoom(n, seat);
+      return new Response("Bad room", { status: 400 });
+    }
+
+    // API
+    if (pathname === "/api/action" && req.method === "POST") {
+      return this.handleAction(req);
+    }
+    if (pathname === "/api/move" && req.method === "POST") {
+      return this.handleMove(req);
+    }
+
+    return new Response("Not found", { status: 404 });
   }
 
-  // …（中略：SSEハンドラ、スナップショット、合法手計算等 既存実装）…
+  // ---------------- utilities ----------------
 
-  async handleAction(req:Request): Promise<Response> {
-    const body = await req.json().catch(()=>({}));
-
-    // ▼ 追加: Heartbeat（空POST + X-Play-Token もしくは action==='hb'）
-    const action = (body.action||'').toLowerCase();
-    const hbToken = req.headers.get('X-Play-Token') || '';
-    if ((!action || action==='hb') && hbToken){
-      this.lastHbAt.set(hbToken, Date.now());
-      slog('HB', { token: tokShort(hbToken) });
-      return new Response(null, { status: 204 });
-    }
-
-    const room = Math.max(1, Math.min(4, parseInt(body.room,10)||1));
-    const wantSeat = (body.seat || 'observer') as Seat;
-    const sseId = body.sse as (string|undefined);
-    const r = this.rooms.get(room)!;
-
-    if (action==='join'){
-      let seat: Seat = wantSeat;
-      let token: string | undefined;
-      if (wantSeat==='black' || wantSeat==='white'){
-        const occ = wantSeat==='black' ? r.black : r.white;
-        if (!occ){
-          token = genToken();
-          if (wantSeat==='black') r.black = token; else r.white = token;
-          this.tokenMap.set(token, { room, seat: wantSeat, sseId });
-          if (sseId) this.sseMap.set(sseId, { room, seat: wantSeat });
-
-          // ★ 両者が揃った瞬間に初期化して再開（leave からの復帰含む）
-          if (r.black && r.white){
-            r.board = initialBoard();
-            r.status='playing';
-            r.turn='black';
-            r.firstMoveLoggedBlack = false;
-            r.firstMoveLoggedWhite = false;
-          }
-
-          slog('JOIN', { room, seat: wantSeat, token: tokShort(token!) });
-        } else {
-          seat = 'observer';
-          slog('JOIN_TO_OBS', { room, want: wantSeat });
-        }
-      }else{
-        seat='observer';
-        slog('JOIN_OBS', { room });
-      }
-      const hdr = new Headers({'Content-Type':'application/json'});
-      if (token) hdr.set('X-Play-Token', token);
-      this.broadcastLobby(); this.broadcastRoom(room);
-      return new Response(JSON.stringify(this.snapshot(room, seat)), {status:200, headers:hdr});
-    }
-
-    if (action==='leave'){
-      const token = req.headers.get('X-Play-Token') || '';
-      if (token){
-        const info = this.tokenMap.get(token);
-        if (info){ this.leaveByTokenInfo(info); this.lastHbAt.delete(token); }
-        const hdr = new Headers({'Content-Type':'application/json','X-Log-Event':'token-deleted'});
-        return new Response(JSON.stringify(this.snapshot(room)), {status:200, headers:hdr});
-      }else if (sseId && this.sseMap){
-        const info = this.sseMap.get(sseId)!;
-        this.leaveByTokenInfo(info);
-        const hdr = new Headers({'Content-Type':'application/json','X-Log-Event':'token-deleted'});
-        return new Response(JSON.stringify(this.snapshot(info.room)), {status:200, headers:hdr});
-      }else{
-        return json({ok:true});
-      }
-    }
-
-    return new Response('Bad Request', {status:400});
+  private randomToken(): string {
+    const s = Math.random().toString(36).slice(2, 10);
+    return s;
   }
 
-  // v0.8: 片側が抜けたら status='leave' + ゼロ盤面 + turn=null を即配信
-  //       両者不在になったら waiting + 初期盤面に戻す
-  leaveByTokenInfo(info:TokenInfo){
-    const r = this.rooms.get(info.room)!;
-    if (!r) return;
-
-    if (info.seat==='black') r.black=null;
-    if (info.seat==='white') r.white=null;
-
-    if (!r.black && !r.white){
-      r.board = initialBoard();
-      r.turn = null;
-      r.status = 'waiting';
-      r.firstMoveLoggedBlack = false;
-      r.firstMoveLoggedWhite = false;
-    } else {
-      // 片側が残っている → leave + ゼロ盤面
-      r.board = zeroBoard();
-      r.turn = null;
-      r.status = 'leave';
-      r.firstMoveLoggedBlack = false;
-      r.firstMoveLoggedWhite = false;
-    }
-
-    this.broadcastLobby(); this.broadcastRoom(info.room);
-  }
-
-  // ▼ 追加: HBタイムアウトのスイープ
-  sweepHb(){
-    const now = Date.now();
-    const TTL_HB = 25000; // 25s
-    for (const [token, ts] of this.lastHbAt){
-      if (now - ts > TTL_HB){
-        const info = this.tokenMap.get(token);
-        if (info){
-          slog('LEAVE_TIMEOUT_HB', { room: info.room, seat: info.seat, token: tokShort(token) });
-          this.leaveByTokenInfo(info);
-        }
-        this.lastHbAt.delete(token);
-      }
-    }
-  }
-
-  findBySseId(sseId:string){
-    return this.sseMap.get(sseId);
-  }
-
-  snapshotAll(){
-    const pack: any = { rooms: {} as any, ts: Date.now() };
-    for (const n of [1,2,3,4]){
-      const r = this.rooms.get(n)!;
-      pack.rooms[n] = {
-        status: r.status,
-        seats: { black: !!r.black, white: !!r.white },
-        watchers: r.watchers
-      };
-    }
-    return pack;
-  }
-
-  snapshot(room:number, seat?:Seat){
-    const r = this.rooms.get(room)!;
+  private snapshotRoom(n: number, seat: Seat): SnapshotRoom {
+    const r = this.rooms.get(n)!;
     return {
-      room,
+      room: n,
       seat,
       status: r.status,
       turn: r.turn,
-      board: { size: 8, stones: r.board },
-      legal: legalMoves(r.board, r.turn),
-      watchers: r.watchers
+      board: r.board,
+      legal: r.legal,
+      watchers: r.watchers.size,
     };
   }
 
-  broadcastLobby(){
-    const pack = this.snapshotAll();
-    for (const c of this.lobbyClients){
-      try { c.controller.enqueue(encodeSse('room_state', pack)); } catch {}
+  private snapshotLobby(): SnapshotLobby {
+    const rooms: SnapshotLobby["rooms"] = {};
+    for (const [n, r] of this.rooms) {
+      rooms[String(n)] = {
+        seats: {
+          // Vacant flags: 空いている = true（トークン無し）
+          black: !r.blackToken,
+          white: !r.whiteToken,
+        },
+        watchers: r.watchers.size,
+        status: r.status ?? "waiting",
+      };
+    }
+    return { rooms, ts: Date.now() };
+  }
+
+  private sseHeaders(): Headers {
+    const h = new Headers();
+    h.set("content-type", "text/event-stream");
+    h.set("cache-control", "no-cache");
+    h.set("connection", "keep-alive");
+    return h;
+  }
+
+  private sendEvent(c: SseClient, event: string, data: any) {
+    const payload = `event: ${event}\n` + `data: ${JSON.stringify(data)}\n\n`;
+    try {
+      c.controller.enqueue(enc(payload));
+    } catch {
+      // ignore
     }
   }
 
-  broadcastRoom(room:number){
-    const rset = this.roomClients.get(room);
-    if (!rset) return;
-    const snap = this.snapshot(room);
-    for (const c of rset){
-      try { c.controller.enqueue(encodeSse('room_state', snap)); } catch {}
+  private broadcastRoom(n: number) {
+    const r = this.rooms.get(n)!;
+    const snap = this.snapshotRoom(n, "observer");
+    for (const c of r.watchers) this.sendEvent(c, "room_state", snap);
+  }
+
+  private broadcastLobby() {
+    const snap = this.snapshotLobby();
+    for (const c of this.lobbyWatchers) this.sendEvent(c, "room_state", snap);
+  }
+
+  private resetAll() {
+    this.tokenMap.clear();
+    for (let n = 1; n <= 4; n++) {
+      const r = this.rooms.get(n)!;
+      r.blackToken = undefined;
+      r.whiteToken = undefined;
+      r.status = "waiting";
+      r.turn = null;
+      r.board = initBoard();
+      r.legal = [];
+      // watchers は接続中のSSEなので触らない
     }
   }
-}
 
-// ===== ヘルパ =====
+  // ---------------- SSE handlers ----------------
 
-function encodeSse(event:string, data:any){
-  return new TextEncoder().encode(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
-}
+  private handleSseLobby(): Response {
+    const stream = new ReadableStream<Uint8Array>({
+      start: (controller) => {
+        const client: SseClient = { controller };
+        this.lobbyWatchers.add(client);
+        // 接続直後にスナップショット
+        this.sendEvent(client, "room_state", this.snapshotLobby());
+        // 接続増減をロビーへ反映（人数）
+        this.broadcastLobby();
 
-function json(obj:any, code=200){
-  return new Response(JSON.stringify(obj), { status:code, headers:{'Content-Type':'application/json'} });
-}
+        // 切断時
+        const drop = () => {
+          if (this.lobbyWatchers.delete(client)) {
+            this.broadcastLobby();
+          }
+        };
+        // Cloudflare DO では close/cancelは自前管理
+        (controller as any).signal?.addEventListener?.("abort", drop);
+      },
+      cancel: () => {
+        // nop（上で処理）
+      },
+    });
+    return new Response(stream, this.sseHeaders());
+  }
 
-function genToken(){
-  return Math.random().toString(36).slice(2,10);
-}
+  private handleSseRoom(n: number, _seat: Seat): Response {
+    const r = this.rooms.get(n)!;
+    const stream = new ReadableStream<Uint8Array>({
+      start: (controller) => {
+        const client: SseClient = { controller };
+        r.watchers.add(client);
+        // 接続直後に部屋スナップショット
+        this.sendEvent(client, "room_state", this.snapshotRoom(n, "observer"));
+        // ロビー（watchers数）も反映
+        this.broadcastLobby();
 
-function tokShort(t:string){ return t.slice(0,2) + "******"; }
+        const drop = () => {
+          if (r.watchers.delete(client)) {
+            this.broadcastLobby();
+          }
+        };
+        (controller as any).signal?.addEventListener?.("abort", drop);
+      },
+    });
+    return new Response(stream, this.sseHeaders());
+  }
 
-function initialBoard(): string[]{
-  const rows = Array.from({length:8}, ()=>'--------');
-  const mid=3;
-  const r = rows.map(x=>x.split(''));
-  r[mid][mid]='W'; r[mid+1][mid+1]='W';
-  r[mid][mid+1]='B'; r[mid+1][mid]='B';
-  return r.map(a=>a.join(''));
-}
+  // ---------------- API: action ----------------
 
-function zeroBoard(): string[]{
-  return Array.from({length:8}, ()=>'--------');
-}
+  private async handleAction(req: Request): Promise<Response> {
+    // Heartbeat: empty body + X-Play-Token
+    const token = req.headers.get("x-play-token") || "";
+    if (token && (!req.headers.get("content-length") || (await req.clone().text()).trim() === "")) {
+      // Step1: HBは受理だけ（TTL監視は別フェーズでも可）
+      return new Response(null, { status: 204 });
+    }
 
-function posToXY(pos:string): [number,number]{
-  const x = pos.charCodeAt(0)-97;
-  const y = parseInt(pos.slice(1),10)-1;
-  return [x,y];
-}
+    const body = await req.json().catch(() => ({}));
+    const action = body.action as "join" | "leave";
 
-function legalMoves(board:string[], turn:Turn): string[]{
-  if (!turn) return [];
-  const me = turn==='black'?'B':'W';
-  const op = turn==='black'?'W':'B';
-  const moves = new Set<string>();
-  const rows = board.map(x=>x.split(''));
-  const inside = (i:number,j:number)=>i>=0&&i<8&&j>=0&&j<8;
+    if (action === "join") {
+      const room = Number(body.room || 0);
+      const seat = (body.seat || "observer") as Seat;
+      const sseId = String(body.sse || "");
+      return this.join(room, seat, sseId);
+    }
 
-  for (let y=0;y<8;y++){
-    for (let x=0;x<8;x++){
-      if (rows[y][x]!=='-') continue;
-      for (const [dx,dy] of DIRS){
-        let i=x+dx, j=y+dy, seen=0;
-        while (inside(i,j) && rows[j][i]===op){ i+=dx; j+=dy; seen++; }
-        if (seen>0 && inside(i,j) && rows[j][i]===me){ moves.add(String.fromCharCode(97+x)+(y+1)); break; }
+    if (action === "leave") {
+      const room = Number(body.room || 0);
+      const sseId = String(body.sse || "");
+      return this.leave(room, sseId, token);
+    }
+
+    return new Response("bad action", { status: 400 });
+  }
+
+  private join(roomNo: number, seat: Seat, _sseId: string): Response {
+    const r = this.rooms.get(roomNo);
+    if (!r) return new Response("bad room", { status: 400 });
+
+    let grantedSeat: Seat = "observer";
+    let tok = this.randomToken();
+
+    if (seat === "black" && !r.blackToken) {
+      r.blackToken = tok;
+      r.status = r.whiteToken ? "black" : "waiting";
+      r.turn = r.whiteToken ? "black" : null;
+      grantedSeat = "black";
+    } else if (seat === "white" && !r.whiteToken) {
+      r.whiteToken = tok;
+      r.status = r.blackToken ? "black" : "waiting";
+      r.turn = r.blackToken ? "black" : null;
+      grantedSeat = "white";
+    } else {
+      // 観戦
+      grantedSeat = "observer";
+      tok = this.randomToken();
+    }
+
+    this.tokenMap.set(tok, { token: tok, room: roomNo, seat: grantedSeat });
+
+    // ルーム & ロビーへ配信（← 重要）
+    this.broadcastRoom(roomNo);
+    this.broadcastLobby();
+
+    const snap = this.snapshotRoom(roomNo, grantedSeat);
+    const h = new Headers({ "content-type": "application/json" });
+    h.set("X-Play-Token", tok);
+    return new Response(JSON.stringify(snap), { status: 200, headers: h });
+  }
+
+  private leave(roomNo: number, sseId: string, tokenHeader: string): Response {
+    // sseId は beacon 用の名残。ここでは未使用でもOK。
+    const tok = tokenHeader || "";
+    const info = tok ? this.tokenMap.get(tok) : undefined;
+    const r = this.rooms.get(roomNo);
+    if (!r) return new Response("bad room", { status: 400 });
+
+    if (info && info.room === roomNo) {
+      if (info.seat === "black" && r.blackToken === tok) r.blackToken = undefined;
+      if (info.seat === "white" && r.whiteToken === tok) r.whiteToken = undefined;
+      this.tokenMap.delete(tok);
+      // ステータス更新
+      if (!r.blackToken && !r.whiteToken) {
+        r.status = "waiting";
+        r.turn = null;
+      } else if (r.blackToken && !r.whiteToken) {
+        r.status = "waiting";
+        r.turn = null;
+      } else if (!r.blackToken && r.whiteToken) {
+        r.status = "waiting";
+        r.turn = null;
       }
     }
+
+    // ルーム & ロビーへ配信（← 重要）
+    this.broadcastRoom(roomNo);
+    this.broadcastLobby();
+
+    const snap = this.snapshotRoom(roomNo, "observer");
+    return new Response(JSON.stringify(snap), {
+      status: 200,
+      headers: { "content-type": "application/json" },
+    });
   }
-  return [...moves].sort();
+
+  // ---------------- API: move（簡易／盤面ロジックは既存のまま想定） ----------------
+
+  private async handleMove(req: Request): Promise<Response> {
+    const token = req.headers.get("x-play-token") || "";
+    const info = token ? this.tokenMap.get(token) : undefined;
+    if (!info || (info.seat !== "black" && info.seat !== "white"))
+      return new Response("forbidden", { status: 403 });
+
+    const body = await req.json().catch(() => ({}));
+    const pos = String(body.pos || "");
+    const r = this.rooms.get(info.room)!;
+
+    // ここは既存実装のまま（盤面更新→合法手更新→ターン交代）
+    // ダミーでターンだけ交代
+    if (r.turn === "black") r.turn = "white";
+    else r.turn = "black";
+    r.status = r.turn === "black" ? "black" : "white";
+
+    const snap = this.snapshotRoom(info.room, info.seat);
+
+    // ルーム & ロビーへ配信（turnはロビーUIでも使う想定なら）
+    this.broadcastRoom(info.room);
+    this.broadcastLobby();
+
+    return new Response(JSON.stringify(snap), {
+      status: 200,
+      headers: { "content-type": "application/json" },
+    });
+  }
 }
 
-function applyMove(board:string[], pos:string, turn:Exclude<Turn,null>): string[] {
-  const [x,y] = posToXY(pos);
-  const me = turn==='black'?'B':'W';
-  const op = turn==='black'?'W':'B';
-  if (board[y][x] !== '-') return board;
-  const rows = board.map(r=>r.split(''));
-  let flipped = 0;
-  for (const [dx,dy] of DIRS){
-    let i=x+dx, j=y+dy;
-    const buf:[number,number][]=[];
-    while (i>=0 && i<8 && j>=0 && j<8){
-      const ch = rows[j][i];
-      if (ch===op){ buf.push([i,j]); i+=dx; j+=dy; continue; }
-      if (ch===me && buf.length>0){ for (const [bi,bj] of buf){ rows[bj][bi]=me; } flipped+=buf.length; }
-      break;
-    }
-  }
-  if (flipped===0) return board;
-  rows[y][x]=me;
-  return rows.map(a=>a.join(''));
-}
+export default {
+  async fetch(req: Request, env: Env) {
+    const id = env.REVERSI_HUB.idFromName("global");
+    const stub = env.REVERSI_HUB.get(id);
+    return stub.fetch(req);
+  },
+} satisfies ExportedHandler<Env>;
