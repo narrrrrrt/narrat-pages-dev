@@ -1,208 +1,178 @@
-// Reversi room client 1.1 (Step1: Browser Heartbeat + Beacon Leave)
-// ベース: v0.9h（元実装）にHB/Beaconを追加。既存の描画・SSE・join/leaveは維持。
+// public/js/reverse.js -- v1.1.3 (debug-join print)
 
-(() => {
-  const q = (s) => document.querySelector(s);
-  const hud = {
-    room: q('#hud-room'), seat: q('#hud-seat'),
-    turn: q('#hud-turn'), status: q('#hud-status'),
-    watchers: q('#hud-watchers')
-  };
-  const gridEl = q('#grid');
-  const stonesEl = q('#stones');
-  const legalsEl = q('#legals');
-  const lobbyLink = q('#to-lobby');
+(function () {
+  // ---- tiny utils ---------------------------------------------------------
+  function qs(k) { const u = new URL(location.href); return u.searchParams.get(k); }
+  function $(s) { return document.querySelector(s); }
+  function randId() { return Math.random().toString(16).slice(2, 10); }
+  function enc(s) { return encodeURIComponent(s); }
 
-  const url = new URL(location.href);
-  const room = Number(url.searchParams.get('room') || '1');
-  const wantSeat = (url.searchParams.get('seat') || 'observer');
-  let seat = 'observer';
-  let status = 'waiting';
-  let turn = null;
-  let token = localStorage.getItem('playToken') || '';
-  let sse; let sseId = Math.random().toString(36).slice(2);
+  // ---- i18n (最小; 既存の system_messages.json はそのまま) -------------
+  let MSG = { opponent_left: 'Opponent left' };
+  fetch('/i18n/system_messages.json').then(r => r.json()).then(all => {
+    const lang = (navigator.language || 'en').slice(0, 2);
+    if (all && all.opponent_left) MSG.opponent_left = all[lang]?.opponent_left || all.en || MSG.opponent_left;
+  }).catch(() => {});
 
-  let leaveLatch = false; // ポップアップ中 leave 固定
+  // ---- room / seats -------------------------------------------------------
+  const room = Math.min(4, Math.max(1, parseInt(qs('room') || '1', 10)));
+  const wantSeat = (qs('seat') || 'observer'); // 'black'|'white'|'observer'
+  const sseId = randId();
 
-  // --- Heartbeat (Browser only) ---
-  const HB_INTERVAL_MS = 7000; // 7s
+  // state
+  let token = '';
+  let mySeat = 'observer';
+  let lastStatus = null;
   let hbTimer = null;
 
-  function startHeartbeat(){
-    stopHeartbeat();
-    if (!token) return; // 観戦者などトークン未取得時は送らない
-    hbTimer = setInterval(() => {
-      // /api/action にヘッダだけで空POST（204想定）。レスは使わない。
-      fetch('/api/action', {
-        method: 'POST',
-        keepalive: true,
-        headers: { 'X-Play-Token': token }
-        // body なし
-      }).catch(()=>{ /* ネット切断などは無視 */ });
-    }, HB_INTERVAL_MS);
-  }
-  function stopHeartbeat(){
-    if (hbTimer){ clearInterval(hbTimer); hbTimer = null; }
-  }
+  // HUD
+  $('#room-no').textContent = String(room);
 
-  // --- pagehide/beforeunload: 早期退室（Beacon） ---
-  function sendLeaveBeacon(){
-    try {
-      const body = JSON.stringify({ action: 'leave', room, sse: sseId });
-      // Beacon はヘッダ付与不可。サーバ側は sseId で退室を受理する。
-      navigator.sendBeacon('/api/action', body);
-    } catch {}
-  }
-  addEventListener('pagehide', sendLeaveBeacon, { capture: true });
-  addEventListener('beforeunload', sendLeaveBeacon, { capture: true });
+  // ---- board rendering ----------------------------------------------------
+  const elBoard = $('#board');
+  const elGrid  = $('#grid');
+  const elStones = $('#stones');
+  const elLegals = $('#legals');
 
-  // --- UI helpers ---
-  const xyOfIndex = (idx) => [idx % 8, Math.floor(idx / 8)];
-  const posCenter = (x, y) => {
-    const cs = parseFloat(getComputedStyle(document.documentElement).getPropertyValue('--cell-size'));
-    const gp = parseFloat(getComputedStyle(document.documentElement).getPropertyValue('--cell-gap'));
-    const xpx = x * (cs + gp) + cs / 2;
-    const ypx = y * (cs + gp) + cs / 2;
-    return [xpx, ypx];
-  };
-
-  function setHUD(snap) {
-    hud.room.textContent = String(snap.room || room);
-    hud.seat.textContent = seat;
-    hud.turn.textContent = snap.turn ?? '–';
-    hud.status.textContent = snap.status;
-    hud.watchers.textContent = String(snap.watchers ?? 0);
-  }
-
-  function buildGrid() {
-    gridEl.innerHTML = '';
-    for (let i = 0; i < 64; i++) {
-      const d = document.createElement('div');
-      d.className = 'cell';
-      gridEl.appendChild(d);
+  function createGrid() {
+    const frag = document.createDocumentFragment();
+    for (let y = 0; y < 8; y++) {
+      for (let x = 0; x < 8; x++) {
+        const c = document.createElement('div');
+        c.className = 'cell';
+        c.dataset.xy = String.fromCharCode(97 + x) + (y + 1); // a1..h8
+        frag.appendChild(c);
+      }
     }
+    elGrid.innerHTML = '';
+    elGrid.appendChild(frag);
   }
 
-  function drawStones(board) {
-    stonesEl.innerHTML = '';
-    board.forEach((row, y) => {
-      [...row].forEach((ch, x) => {
-        if (ch === 'B' || ch === 'W') {
-          const el = document.createElement('div');
-          el.className = 'stone ' + (ch === 'B' ? 'black' : 'white');
-          const [cx, cy] = posCenter(x, y);
-          el.style.left = cx + 'px';
-          el.style.top = cy + 'px';
-          stonesEl.appendChild(el);
+  function renderBoard(board, legal) {
+    if (!board || !Array.isArray(board.stones)) return;
+    const map = {}; // "d3": true
+    (legal || []).forEach(p => (map[p] = true));
+
+    // stones
+    const stones = board.stones;
+    elStones.innerHTML = '';
+    const sf = document.createDocumentFragment();
+    for (let y = 0; y < 8; y++) {
+      const row = stones[y] || '--------';
+      for (let x = 0; x < 8; x++) {
+        const ch = row[x];
+        if (ch === 'W' || ch === 'B') {
+          const d = document.createElement('div');
+          d.className = 'stone ' + (ch === 'W' ? 'W' : 'B');
+          d.style.setProperty('--x', x);
+          d.style.setProperty('--y', y);
+          sf.appendChild(d);
         }
-      });
-    });
-  }
-
-  function drawLegals(legal) {
-    legalsEl.innerHTML = '';
-    if (!turn || seat !== turn) return;
-    for (const p of legal || []) {
-      const x = p.charCodeAt(0) - 97;
-      const y = parseInt(p.slice(1), 10) - 1;
-      const dot = document.createElement('div');
-      dot.className = 'legal';
-      const [cx, cy] = posCenter(x, y);
-      dot.style.left = cx + 'px';
-      dot.style.top = cy + 'px';
-      legalsEl.appendChild(dot);
+      }
     }
+    elStones.appendChild(sf);
+
+    // legal
+    elLegals.innerHTML = '';
+    const lf = document.createDocumentFragment();
+    for (let y = 0; y < 8; y++) {
+      for (let x = 0; x < 8; x++) {
+        const xy = String.fromCharCode(97 + x) + (y + 1);
+        if (map[xy]) {
+          const h = document.createElement('div');
+          h.className = 'legal';
+          h.style.setProperty('--x', x);
+          h.style.setProperty('--y', y);
+          h.dataset.xy = xy;
+          lf.appendChild(h);
+        }
+      }
+    }
+    elLegals.appendChild(lf);
   }
 
-  stonesEl.parentElement.addEventListener('click', async (ev) => {
-    if (!turn || seat !== turn) return;
-    const rect = stonesEl.getBoundingClientRect();
-    const cs = parseFloat(getComputedStyle(document.documentElement).getPropertyValue('--cell-size'));
-    const gp = parseFloat(getComputedStyle(document.documentElement).getPropertyValue('--cell-gap'));
-    const xrel = ev.clientX - rect.left;
-    const yrel = ev.clientY - rect.top;
-    const x = Math.floor(xrel / (cs + gp));
-    const y = Math.floor(yrel / (cs + gp));
-    const pos = String.fromCharCode(97 + x) + (y + 1);
-
-    if (!token) return;
-    await fetch('/api/move', {
-      method: 'POST',
-      headers: { 'content-type': 'application/json', 'X-Play-Token': token },
-      body: JSON.stringify({ room, pos })
-    }).catch(()=>{});
-  });
-
-  function openSSE() {
-    if (sse) sse.close();
-    const u = new URL('/sse', location.origin);
-    u.searchParams.set('room', String(room));
-    u.searchParams.set('seat', seat);
-    u.searchParams.set('sse', sseId);
-    sse = new EventSource(u);
-
-    sse.addEventListener('room_state', (e) => {
-      const snap = JSON.parse(e.data);
-      if (leaveLatch) {
-        snap.status = 'leave'; // モーダル中は強制 leave 表示
-      }
-      status = snap.status;
-      turn = snap.turn;
-      setHUD(snap);
-      drawStones(snap.board.stones);
-      drawLegals(snap.legal);
-
-      // opponent-left detection
-      if (!leaveLatch && snap.status === 'leave' && seat !== 'observer') {
-        showModal('対戦相手が退出しました。');
-      }
-    });
+  // ---- debug print --------------------------------------------------------
+  const dbgEl = $('#debug-join');
+  function dbg(title, obj) {
+    if (!dbgEl) return;
+    const ts = new Date().toLocaleTimeString();
+    const head = title ? `[${ts}] ${title}\n` : '';
+    const body = obj !== undefined ? (typeof obj === 'string' ? obj : JSON.stringify(obj, null, 2)) : '';
+    dbgEl.textContent = (head + body + '\n\n' + dbgEl.textContent).slice(0, 10000); // 直近を上に
   }
 
+  // ---- join / heartbeat / sse --------------------------------------------
   async function join() {
     const body = { action: 'join', room, seat: wantSeat, sse: sseId };
+
+    // ★ デバッグ: 送信ボディを画面に出す
+    dbg('JOIN body', body);
+
     const res = await fetch('/api/action', {
-      method: 'POST', headers: { 'content-type': 'application/json' },
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(body)
     });
-    const snap = await res.json();
-    const t = res.headers.get('X-Play-Token');
-    if (t) { token = t; localStorage.setItem('playToken', token); }
-    seat = snap.seat || 'observer';
-    status = snap.status; turn = snap.turn;
 
-    setHUD(snap);
-    buildGrid();
-    drawStones(snap.board.stones);
-    drawLegals(snap.legal);
+    // token はヘッダ
+    const tk = res.headers.get('X-Play-Token') || '';
+    if (tk) token = tk;
 
-    openSSE();
+    // スナップショット（部屋用）
+    const snap = await res.json().catch(() => null);
+    if (snap && snap.seat) mySeat = snap.seat;
+    applySnapshot(snap);
 
-    // ★ HBは join 成功後に開始（トークン取得済みのときのみ）
+    // join 後: SSE 接続 & Heartbeat 開始
+    startSse();
     startHeartbeat();
+    // Back/遷移で leave（Beacon）
+    window.addEventListener('pagehide', beaconLeave);
   }
 
-  const modal = q('#modal-backdrop');
-  const modalMsg = q('#modal-msg');
-  q('#modal-ok').onclick = () => {
-    hideModal();
-    leaveLatch = false;
-    status = 'waiting'; // 強制 waiting に戻す
-    setHUD({room, status, turn, watchers:0});
-  };
-  function showModal(text){ modalMsg.textContent = text; modal.style.display = 'flex'; leaveLatch = true; }
-  function hideModal(){ modal.style.display = 'none'; }
+  function startHeartbeat() {
+    if (!token) return;
+    if (hbTimer) clearInterval(hbTimer);
+    hbTimer = setInterval(() => {
+      fetch('/api/action', { method: 'POST', headers: { 'X-Play-Token': token } }).catch(() => {});
+    }, 7000);
+  }
 
-  lobbyLink.onclick = async () => {
-    if (sse) { sse.close(); sse = null; }
-    stopHeartbeat(); // ロビーへ戻る前にHB停止
-    await fetch('/api/action', {
-      method: 'POST',
-      headers: { 'content-type': 'application/json', 'X-Play-Token': token },
-      body: JSON.stringify({ action: 'leave', room, sse: sseId })
-    }).catch(()=>{});
-    location.href = '/';
-  };
+  function beaconLeave() {
+    try {
+      navigator.sendBeacon('/api/action', JSON.stringify({ action: 'leave', room, sse: sseId }));
+    } catch {}
+  }
 
-  (async () => { await join(); })();
+  function startSse() {
+    const url = `/?room=${room}&seat=${enc(mySeat || 'observer')}&sse=${enc(sseId)}`;
+    const es = new EventSource(url);
+    es.addEventListener('room_state', ev => {
+      try {
+        const snap = JSON.parse(ev.data);
+        applySnapshot(snap);
+      } catch (e) {
+        dbg('SSE parse error', String(e));
+      }
+    });
+    es.onerror = () => { /* silent */ };
+  }
+
+  // ---- snapshot -> UI -----------------------------------------------------
+  function applySnapshot(snap) {
+    if (!snap) return;
+    // HUD
+    $('#seat-now').textContent = snap.seat || mySeat || '-';
+    $('#status').textContent = snap.status || '-';
+    $('#turn').textContent = snap.turn === 'black' ? '●'
+                       : snap.turn === 'white' ? '○' : '–';
+    $('#watchers').textContent = String(snap.watchers ?? 0);
+
+    // board
+    if (snap.board) renderBoard(snap.board, snap.legal || []);
+  }
+
+  // ---- init ---------------------------------------------------------------
+  createGrid();
+  join().catch(err => dbg('JOIN error', String(err)));
 })();
