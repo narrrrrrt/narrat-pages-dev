@@ -1,4 +1,6 @@
-// Reversi room client 0.9h
+// Reversi room client 1.1 (Step1: Browser Heartbeat + Beacon Leave)
+// ベース: v0.9h（元実装）にHB/Beaconを追加。既存の描画・SSE・join/leaveは維持。
+
 (() => {
   const q = (s) => document.querySelector(s);
   const hud = {
@@ -22,6 +24,39 @@
 
   let leaveLatch = false; // ポップアップ中 leave 固定
 
+  // --- Heartbeat (Browser only) ---
+  const HB_INTERVAL_MS = 7000; // 7s
+  let hbTimer = null;
+
+  function startHeartbeat(){
+    stopHeartbeat();
+    if (!token) return; // 観戦者などトークン未取得時は送らない
+    hbTimer = setInterval(() => {
+      // /api/action にヘッダだけで空POST（204想定）。レスは使わない。
+      fetch('/api/action', {
+        method: 'POST',
+        keepalive: true,
+        headers: { 'X-Play-Token': token }
+        // body なし
+      }).catch(()=>{ /* ネット切断などは無視 */ });
+    }, HB_INTERVAL_MS);
+  }
+  function stopHeartbeat(){
+    if (hbTimer){ clearInterval(hbTimer); hbTimer = null; }
+  }
+
+  // --- pagehide/beforeunload: 早期退室（Beacon） ---
+  function sendLeaveBeacon(){
+    try {
+      const body = JSON.stringify({ action: 'leave', room, sse: sseId });
+      // Beacon はヘッダ付与不可。サーバ側は sseId で退室を受理する。
+      navigator.sendBeacon('/api/action', body);
+    } catch {}
+  }
+  addEventListener('pagehide', sendLeaveBeacon, { capture: true });
+  addEventListener('beforeunload', sendLeaveBeacon, { capture: true });
+
+  // --- UI helpers ---
   const xyOfIndex = (idx) => [idx % 8, Math.floor(idx / 8)];
   const posCenter = (x, y) => {
     const cs = parseFloat(getComputedStyle(document.documentElement).getPropertyValue('--cell-size'));
@@ -142,6 +177,9 @@
     drawLegals(snap.legal);
 
     openSSE();
+
+    // ★ HBは join 成功後に開始（トークン取得済みのときのみ）
+    startHeartbeat();
   }
 
   const modal = q('#modal-backdrop');
@@ -157,6 +195,7 @@
 
   lobbyLink.onclick = async () => {
     if (sse) { sse.close(); sse = null; }
+    stopHeartbeat(); // ロビーへ戻る前にHB停止
     await fetch('/api/action', {
       method: 'POST',
       headers: { 'content-type': 'application/json', 'X-Play-Token': token },
