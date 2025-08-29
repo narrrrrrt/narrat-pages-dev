@@ -6,13 +6,14 @@
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <link href="/css/style.css" rel="stylesheet" />
   <style>
+    /* 既存CSSがあればそちらが優先。これはフォールバック用の軽い体裁だけ */
     .room-grid{display:grid;grid-template-columns:repeat(2,minmax(260px,1fr));gap:16px;margin:16px auto;max-width:900px}
     .card{border:1px solid #ddd;border-radius:10px;padding:12px}
     .hdr{display:flex;justify-content:space-between;align-items:center;margin-bottom:8px}
     .badges span{display:inline-block;border-radius:8px;padding:2px 8px;margin-left:6px;font-size:.85em;background:#f4f4f4}
     .btns{display:flex;gap:8px;flex-wrap:wrap;margin-top:8px}
     .btn{padding:8px 12px;border-radius:6px;border:1px solid #ccc;background:#fff;text-decoration:none;display:inline-block}
-    .btn.dim{opacity:.55} /* 占有中の見た目だけ"無効"。クリックは可能（観戦フォールバック用） */
+    .btn.dim{opacity:.55} /* 占有中の見た目だけ"無効"。クリック自体は許容（サーバ側で観戦にフォールバック） */
     .muted{color:#666}
     #adminbar{max-width:900px;margin:8px auto 0;display:flex;justify-content:flex-end}
   </style>
@@ -20,7 +21,7 @@
 <body>
   <h1 style="text-align:center;margin:16px 0">Reversi Lobby</h1>
 
-  <!-- テスト用のリセット（本番で消す想定） -->
+  <!-- テスト用：Reset DO（本番で削除予定） -->
   <div id="adminbar">
     <button id="btn-reset" class="btn">Reset DO</button>
   </div>
@@ -83,9 +84,10 @@
             </div>
           </div>
           <div class="btns">
-            <a class="btn" id="r${n}-b"  href="/?seat=black&room=${n}">● Join (Black)</a>
-            <a class="btn" id="r${n}-w"  href="/?seat=white&room=${n}">○ Join (White)</a>
-            <a class="btn" id="r${n}-obs" href="/?seat=observer&room=${n}" data-i18n="spectate">${I18N.spectate}</a>
+            <!-- ★ ここを /reverse.html?... に統一 -->
+            <a class="btn" id="r${n}-b"  href="/reverse.html?seat=black&room=${n}">● Join (Black)</a>
+            <a class="btn" id="r${n}-w"  href="/reverse.html?seat=white&room=${n}">○ Join (White)</a>
+            <a class="btn" id="r${n}-obs" href="/reverse.html?seat=observer&room=${n}" data-i18n="spectate">${I18N.spectate}</a>
           </div>
           <div class="muted">
             Black: <span id="r${n}-v-b" data-i18n="vacant-b">${I18N.vacant}</span>
