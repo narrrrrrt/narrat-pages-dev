@@ -1,20 +1,18 @@
 // functions/api/admin.ts
-// 目的: クライアントからの POST /api/admin を既存の /api/action に転送し、
-//       DO 側の admin reset を起動する。「204 No Content」を返すだけ。
-// 注意: クライアントからはパラメータ不要（空リクエストでOK）。
+// 目的: Reset DO（全ルーム初期化＆全SSE切断）をトリガーする最小API。
+// 仕様: パラメータ不要 / 応答は 204 No Content（本文なし）
 
 export const onRequestPost: PagesFunction = async ({ request }) => {
-  // 既存の /api/action 経由で DO に届くよう、同一オリジンへ内部呼び出し
+  // 同一オリジンの /api/action に "__admin_reset__" を一度だけ転送
   const actionUrl = new URL("/api/action", request.url);
-
-  // DO 側では "__admin_reset__" を見て初期化を実行する（本文は Pages 内だけで使用）
-  await fetch(actionUrl.toString(), {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ action: "__admin_reset__" }),
-    // 応答は捨てる（204想定）
-  }).catch(() => { /* 無視 */ });
-
-  // 仕様どおり本文なし
+  try {
+    await fetch(actionUrl.toString(), {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ action: "__admin_reset__" }),
+    });
+  } catch {
+    // 失敗しても仕様上は本文なしで返す（UI側はリロードで整合）
+  }
   return new Response(null, { status: 204 });
 };
