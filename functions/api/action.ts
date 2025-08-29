@@ -1,4 +1,4 @@
-// functions/api/action.ts
+// functions/api/action.ts (v1.1.1)
 import type { Env } from '../types';
 
 export const onRequestPost: PagesFunction<Env> = async (ctx) => {
@@ -6,7 +6,7 @@ export const onRequestPost: PagesFunction<Env> = async (ctx) => {
   const id = env.REVERSI_HUB.idFromName('global');
   const stub = env.REVERSI_HUB.get(id);
 
-  const body = await request.text();
+  const body = await request.text(); // HB は空ボディのまま転送
   const url = new URL('/action', 'https://do.local');
   const doReq = new Request(url, {
     method: 'POST',

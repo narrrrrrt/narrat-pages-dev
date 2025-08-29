@@ -1,4 +1,4 @@
-// Reversi room client 0.9h
+// Reversi room client 1.1.1
 (() => {
   const q = (s) => document.querySelector(s);
   const hud = {
@@ -20,6 +20,24 @@
   let token = localStorage.getItem('playToken') || '';
   let sse; let sseId = Math.random().toString(36).slice(2);
 
+  // --- Heartbeat (browser) ---
+  let hbTimer = null;
+  const HB_INTERVAL = 7000; // 7s
+
+  function startHeartbeat() {
+    if (!token) return;
+    if (hbTimer) clearInterval(hbTimer);
+    hbTimer = setInterval(() => {
+      try {
+        fetch('/api/action', {
+          method: 'POST',
+          keepalive: true,
+          headers: { 'X-Play-Token': token }
+        }); // 204 expected
+      } catch(_){/* noop */}
+    }, HB_INTERVAL);
+  }
+
   let leaveLatch = false; // ポップアップ中 leave 固定
 
   const xyOfIndex = (idx) => [idx % 8, Math.floor(idx / 8)];
@@ -34,69 +52,55 @@
   function setHUD(snap) {
     hud.room.textContent = String(snap.room || room);
     hud.seat.textContent = seat;
-    hud.turn.textContent = snap.turn ?? '–';
-    hud.status.textContent = snap.status;
+    hud.status.textContent = snap.status || status || '-';
+    hud.turn.textContent = (snap.turn==='black' ? '●' : snap.turn==='white' ? '○' : '–');
     hud.watchers.textContent = String(snap.watchers ?? 0);
   }
 
-  function buildGrid() {
-    gridEl.innerHTML = '';
-    for (let i = 0; i < 64; i++) {
-      const d = document.createElement('div');
-      d.className = 'cell';
-      gridEl.appendChild(d);
+  function drawGrid() {
+    const frag = document.createDocumentFragment();
+    for (let i=0;i<64;i++){
+      const cell = document.createElement('div');
+      cell.className = 'cell';
+      frag.appendChild(cell);
     }
+    gridEl.innerHTML = '';
+    gridEl.appendChild(frag);
   }
 
-  function drawStones(board) {
+  function drawStones(stones){
     stonesEl.innerHTML = '';
-    board.forEach((row, y) => {
-      [...row].forEach((ch, x) => {
-        if (ch === 'B' || ch === 'W') {
-          const el = document.createElement('div');
-          el.className = 'stone ' + (ch === 'B' ? 'black' : 'white');
-          const [cx, cy] = posCenter(x, y);
-          el.style.left = cx + 'px';
-          el.style.top = cy + 'px';
-          stonesEl.appendChild(el);
+    stones.forEach((row, y) => {
+      row.split('').forEach((ch, x) => {
+        if (ch==='W' || ch==='B'){
+          const dot = document.createElement('div');
+          dot.className = 'stone ' + (ch==='W' ? 'white' : 'black');
+          const [cx, cy] = posCenter(x,y);
+          dot.style.left = `${cx}px`;
+          dot.style.top  = `${cy}px`;
+          stonesEl.appendChild(dot);
         }
       });
     });
   }
 
-  function drawLegals(legal) {
+  function drawLegals(legal){
     legalsEl.innerHTML = '';
-    if (!turn || seat !== turn) return;
-    for (const p of legal || []) {
-      const x = p.charCodeAt(0) - 97;
-      const y = parseInt(p.slice(1), 10) - 1;
+    (legal||[]).forEach(p => {
+      const x = p.charCodeAt(0) - 97; // a..h
+      const y = parseInt(p.slice(1),10) - 1; // 1..8
       const dot = document.createElement('div');
       dot.className = 'legal';
-      const [cx, cy] = posCenter(x, y);
-      dot.style.left = cx + 'px';
-      dot.style.top = cy + 'px';
+      const [cx, cy] = posCenter(x,y);
+      dot.style.left = `${cx}px`;
+      dot.style.top  = `${cy}px`;
       legalsEl.appendChild(dot);
-    }
+    });
   }
 
-  stonesEl.parentElement.addEventListener('click', async (ev) => {
-    if (!turn || seat !== turn) return;
-    const rect = stonesEl.getBoundingClientRect();
-    const cs = parseFloat(getComputedStyle(document.documentElement).getPropertyValue('--cell-size'));
-    const gp = parseFloat(getComputedStyle(document.documentElement).getPropertyValue('--cell-gap'));
-    const xrel = ev.clientX - rect.left;
-    const yrel = ev.clientY - rect.top;
-    const x = Math.floor(xrel / (cs + gp));
-    const y = Math.floor(yrel / (cs + gp));
-    const pos = String.fromCharCode(97 + x) + (y + 1);
-
-    if (!token) return;
-    await fetch('/api/move', {
-      method: 'POST',
-      headers: { 'content-type': 'application/json', 'X-Play-Token': token },
-      body: JSON.stringify({ room, pos })
-    }).catch(()=>{});
-  });
+  function sseHeaders() {
+    return { headers: { Accept: 'text/event-stream', 'Cache-Control': 'no-cache' } };
+  }
 
   function openSSE() {
     if (sse) sse.close();
@@ -116,9 +120,7 @@
       setHUD(snap);
       drawStones(snap.board.stones);
       drawLegals(snap.legal);
-
-      // opponent-left detection
-      if (!leaveLatch && snap.status === 'leave' && seat !== 'observer') {
+      if (snap.status==='leave' && seat !== 'observer') {
         showModal('対戦相手が退出しました。');
       }
     });
@@ -133,11 +135,13 @@
     const snap = await res.json();
     const t = res.headers.get('X-Play-Token');
     if (t) { token = t; localStorage.setItem('playToken', token); }
+    if (t) startHeartbeat();
     seat = snap.seat || 'observer';
-    status = snap.status; turn = snap.turn;
+    status = snap.status || status;
+    turn = snap.turn ?? turn;
 
+    drawGrid();
     setHUD(snap);
-    buildGrid();
     drawStones(snap.board.stones);
     drawLegals(snap.legal);
 
@@ -164,6 +168,16 @@
     }).catch(()=>{});
     location.href = '/';
   };
+
+  // Early leave via Beacon on navigation/back
+  const leaveBeacon = () => {
+    try {
+      const payload = JSON.stringify({ action: 'leave', room, sse: sseId });
+      navigator.sendBeacon('/api/action', payload);
+    } catch(_){/* noop */}
+  };
+  window.addEventListener('pagehide', leaveBeacon);
+  window.addEventListener('beforeunload', leaveBeacon);
 
   (async () => { await join(); })();
 })();
