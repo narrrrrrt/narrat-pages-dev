@@ -1,18 +1,8 @@
 // functions/api/admin.ts
-// 目的: Reset DO（全ルーム初期化＆全SSE切断）をトリガーする最小API。
-// 仕様: パラメータ不要 / 応答は 204 No Content（本文なし）
-
-export const onRequestPost: PagesFunction = async ({ request }) => {
-  // 同一オリジンの /api/action に "__admin_reset__" を一度だけ転送
-  const actionUrl = new URL("/api/action", request.url);
-  try {
-    await fetch(actionUrl.toString(), {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ action: "__admin_reset__" }),
-    });
-  } catch {
-    // 失敗しても仕様上は本文なしで返す（UI側はリロードで整合）
-  }
-  return new Response(null, { status: 204 });
+export const onRequestPost: PagesFunction = async (ctx) => {
+  const { env } = ctx;
+  const id = env.REVERSI_HUB.idFromName('global');
+  const stub = env.REVERSI_HUB.get(id);
+  const url = new URL('/admin', 'https://do.local');
+  return await stub.fetch(new Request(url, { method:'POST' }));
 };

@@ -1,40 +1,75 @@
-// v1.1.x minimal pass-through middleware
-// 目的: /reverse(.html) を含む静的ファイル配信を一切妨げない。
-//       SSEや /api/* は各 Functions にそのまま渡す。
+// functions/_middleware.ts
+// 1) SSE: /?room=... & Accept: text/event-stream → DO /sse にプロキシ
+// 2) その他は next() へ
+// 3) HTML/PLAIN のレスだけ、R2 に 1 行（1 オブジェクト）で保存（競合なし）
+
+type LogItem = {
+  ts: number;
+  url: string;
+  code: number;
+  ip?: string | null;
+  ua?: string | null;
+};
 
 export const onRequest: PagesFunction = async (ctx) => {
-  const { request, next } = ctx;
+  const { request, env, next } = ctx;
   const url = new URL(request.url);
-  const path = url.pathname;
-  const accept = request.headers.get("accept") || "";
+  const accept = request.headers.get("Accept") || "";
 
-  // 1) 静的アセット & HTML は必ず素通し
-  const isHtml   = path.endsWith(".html") || path === "/";
-  const isStatic =
-    path === "/style.css" ||
-    path.startsWith("/css/") ||
-    path.startsWith("/js/") ||
-    /\.(png|jpg|jpeg|gif|webp|svg|ico|mp3|mp4|txt|map|json)$/i.test(path);
-
-  if (isHtml || isStatic) {
-    return next();
+  // --- 1) SSE を DO に中継 ---
+  if (accept.includes("text/event-stream") && url.searchParams.has("room")) {
+    const id = env.REVERSI_HUB.idFromName("global");
+    const stub = env.REVERSI_HUB.get(id);
+    const doUrl = new URL("/sse" + url.search, "https://do.local");
+    return await stub.fetch(doUrl, {
+      method: "GET",
+      headers: { Accept: "text/event-stream", "Cache-Control": "no-cache" },
+    });
   }
 
-  // 2) ルームのプレティURLも必ず素通し（Clean URLsで /reverse.html -> /reverse になる対策）
-  if (path === "/reverse" || path === "/reverse.html") {
-    return next();
+  // --- 2) 通常処理 ---
+  const res = await next();
+
+  // --- 3) R2 へメタだけ保存（HTML/PLAIN のみ）---
+  try {
+    const bucket = (env as any).LOG_BUCKET as R2Bucket | undefined;
+    if (!bucket) return res;
+
+    const ct = (res.headers.get("Content-Type") || "").toLowerCase();
+    const isEventStream = ct.includes("text/event-stream");
+    const isHtml = ct.includes("text/html");
+    const isPlain = ct.includes("text/plain");
+    if (isEventStream || !(isHtml || isPlain)) return res;
+
+    const item: LogItem = {
+      ts: Date.now(),
+      url: url.toString(),
+      code: res.status,
+      ip: request.headers.get("CF-Connecting-IP"),
+      ua: request.headers.get("User-Agent"),
+    };
+
+    // 1イベント=1オブジェクト（衝突なし）。日付フォルダ配下に保存
+    const now = new Date(item.ts);
+    const yyyy = now.getUTCFullYear();
+    const mm = String(now.getUTCMonth() + 1).padStart(2, "0");
+    const dd = String(now.getUTCDate()).padStart(2, "0");
+    const h = String(now.getUTCHours()).padStart(2, "0");
+    const m = String(now.getUTCMinutes()).padStart(2, "0");
+    const s = String(now.getUTCSeconds()).padStart(2, "0");
+    const ms = String(now.getUTCMilliseconds()).padStart(3, "0");
+    const rid = Math.random().toString(36).slice(2, 8);
+
+    const key = `logs/${yyyy}-${mm}/${dd}/${h}${m}/${s}-${ms}-${rid}.jsonl`;
+    const line = JSON.stringify(item) + "\n";
+
+    await bucket.put(key, line, {
+      httpMetadata: { contentType: "application/json" },
+    });
+  } catch (e) {
+    // 失敗は握りつぶし（本レスポンスを優先）
+    console.warn("log error", e instanceof Error ? e.message : String(e));
   }
 
-  // 3) /api/* は各 Functions (action.ts / move.ts / admin 等) に渡す
-  if (path.startsWith("/api/")) {
-    return next();
-  }
-
-  // 4) SSE は Acceptヘッダで各ハンドラにそのまま渡す（ここで処理しない）
-  if (accept.includes("text/event-stream")) {
-    return next();
-  }
-
-  // 5) それ以外もデフォルトで素通し
-  return next();
+  return res;
 };

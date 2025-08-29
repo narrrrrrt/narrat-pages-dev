@@ -1,124 +1,169 @@
-// public/js/reverse.js -- v1.1.4
-// 目的: v1.1 仕様に合わせて UI を更新。相手の退室はポップアップ→盤面ゼロ→退室→ロビーへ。
-// HB(7s)/Beacon/Moveは据え置き。レスポンス本文は読まない（SSE主体）。
+// Reversi room client 0.9h
+(() => {
+  const q = (s) => document.querySelector(s);
+  const hud = {
+    room: q('#hud-room'), seat: q('#hud-seat'),
+    turn: q('#hud-turn'), status: q('#hud-status'),
+    watchers: q('#hud-watchers')
+  };
+  const gridEl = q('#grid');
+  const stonesEl = q('#stones');
+  const legalsEl = q('#legals');
+  const lobbyLink = q('#to-lobby');
 
-(function () {
-  // ---- helpers ----
-  function qs(k){const u=new URL(location.href);return u.searchParams.get(k)}
-  function randId(){return Math.random().toString(16).slice(2,10)}
-  function $(s){return document.querySelector(s)}
+  const url = new URL(location.href);
+  const room = Number(url.searchParams.get('room') || '1');
+  const wantSeat = (url.searchParams.get('seat') || 'observer');
+  let seat = 'observer';
+  let status = 'waiting';
+  let turn = null;
+  let token = localStorage.getItem('playToken') || '';
+  let sse; let sseId = Math.random().toString(36).slice(2);
 
-  // ---- i18n（ポップアップのみ）----
-  let MSG={opponent_left:'対戦相手が退出しました'};
-  fetch('/i18n/system_messages.json').then(r=>r.json()).then(all=>{
-    const lang=(navigator.language||'en').slice(0,2);
-    if(all&&all.opponent_left){
-      MSG.opponent_left = all.opponent_left[lang] || all.opponent_left.en || MSG.opponent_left;
-    }
-  }).catch(()=>{});
+  let leaveLatch = false; // ポップアップ中 leave 固定
 
-  // ---- params ----
-  const room=Math.max(1,Math.min(4,parseInt(qs('room')||'1',10)));
-  const wantSeat=(qs('seat')||'observer'); // black|white|observer
-  const sseId=randId();
+  const xyOfIndex = (idx) => [idx % 8, Math.floor(idx / 8)];
+  const posCenter = (x, y) => {
+    const cs = parseFloat(getComputedStyle(document.documentElement).getPropertyValue('--cell-size'));
+    const gp = parseFloat(getComputedStyle(document.documentElement).getPropertyValue('--cell-gap'));
+    const xpx = x * (cs + gp) + cs / 2;
+    const ypx = y * (cs + gp) + cs / 2;
+    return [xpx, ypx];
+  };
 
-  // ---- state ----
-  let token=''; let mySeat='observer'; let lastStatus=null; let hbTimer=null;
-
-  // ---- UI ----
-  const elTurn=$('#turn')||createIndicator();
-  const elBoard=$('#board')||createBoard();
-  const elLeaveBtn=$('#btn-leave');
-
-  function createIndicator(){const el=document.createElement('div');el.id='turn';el.style.margin='8px 0';document.body.prepend(el);return el}
-  function createBoard(){const t=document.createElement('table');t.id='board';t.style.borderCollapse='collapse';t.style.margin='8px 0';const tb=document.createElement('tbody');for(let y=0;y<8;y++){const tr=document.createElement('tr');for(let x=0;x<8;x++){const td=document.createElement('td');td.dataset.xy=String.fromCharCode(97+x)+(y+1);td.style.width='32px';td.style.height='32px';td.style.textAlign='center';td.style.border='1px solid #ccc';td.style.fontSize='20px';td.addEventListener('click',onCellClick);tr.appendChild(td)}tb.appendChild(tr)}t.appendChild(tb);document.body.appendChild(t);return t}
-
-  // ---- join ----
-  async function join(){
-    const res=await fetch('/api/action',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({action:'join',room,seat:wantSeat,sse:sseId})});
-    if(!res.ok){alert('Join failed: '+res.status);location.href='/index.html';return}
-    token=res.headers.get('X-Play-Token')||'';
-    const snap=await res.json().catch(()=>null);
-    if(snap&&snap.seat) mySeat=snap.seat;
-    startSse();
-    if(token) startHeartbeat();
+  function setHUD(snap) {
+    hud.room.textContent = String(snap.room || room);
+    hud.seat.textContent = seat;
+    hud.turn.textContent = snap.turn ?? '–';
+    hud.status.textContent = snap.status;
+    hud.watchers.textContent = String(snap.watchers ?? 0);
   }
 
-  // ---- SSE ----
-  let es=null;
-  function startSse(){
-    if(es){es.close();es=null}
-    const url=`/?room=${room}&seat=${encodeURIComponent(mySeat)}&sse=${encodeURIComponent(sseId)}`;
-    es=new EventSource(url);
-    es.addEventListener('room_state',ev=>{
-      try{
-        const snap=JSON.parse(ev.data);
-        if(snap.seat) mySeat=snap.seat;
-        applySnapshot(snap);
-        detectLeaveTransition(snap);
-      }catch(e){}
-    });
-    es.onerror=()=>{ /* 自動再接続に任せる */ };
-  }
-
-  // ---- heartbeat (7s) + beacon leave ----
-  function startHeartbeat(){
-    if(hbTimer) return;
-    const send=()=>{ fetch('/api/action',{method:'POST',keepalive:true,headers:{'X-Play-Token':token}}).catch(()=>{}) };
-    send(); hbTimer=setInterval(send,7000);
-
-    const beacon=()=>{ try{navigator.sendBeacon('/api/action',JSON.stringify({action:'leave',room,sse:sseId}))}catch{} };
-    window.addEventListener('pagehide',beacon);
-    window.addEventListener('beforeunload',beacon);
-  }
-
-  // ---- board / move ----
-  function onCellClick(e){
-    const td=e.currentTarget; if(!td||!token) return;
-    const pos=td.dataset.xy;
-    fetch('/api/move',{method:'POST',headers:{'Content-Type':'application/json','X-Play-Token':token},body:JSON.stringify({room,pos})}).catch(()=>{});
-  }
-
-  function renderBoard(board,legal){
-    if(!board||!Array.isArray(board.stones)) return;
-    const map={}; (legal||[]).forEach(p=>map[p]=true);
-    elBoard.querySelectorAll('td[data-xy]').forEach(td=>{
-      const x=td.dataset.xy.charCodeAt(0)-97; const y=parseInt(td.dataset.xy.slice(1),10)-1;
-      const v=board.stones[y][x];
-      td.textContent=(v==='B')?'●':(v==='W'?'○':(map[td.dataset.xy]?'·':''));
-      td.style.opacity=map[td.dataset.xy]?'0.5':'1';
-    });
-  }
-
-  function setTurn(turn){ elTurn.textContent='Turn: '+(turn? (turn==='black'?'●':'○') : '–') }
-  function clearBoardToEmpty(){ elBoard.querySelectorAll('td[data-xy]').forEach(td=>{td.textContent='';td.style.opacity='1'}); setTurn(null) }
-  function applySnapshot(snap){ renderBoard(snap.board,snap.legal); setTurn(snap.turn); lastStatus=snap.status }
-
-  // ---- leave detection ----
-  function detectLeaveTransition(snap){
-    if(lastStatus==='playing' && snap.status==='leave' && mySeat!=='observer'){
-      alert(MSG.opponent_left);
-      clearBoardToEmpty();
-      if(token){
-        fetch('/api/action',{method:'POST',headers:{'Content-Type':'application/json','X-Play-Token':token},body:JSON.stringify({action:'leave',room})}).catch(()=>{});
-      }
-      location.href='/index.html';
+  function buildGrid() {
+    gridEl.innerHTML = '';
+    for (let i = 0; i < 64; i++) {
+      const d = document.createElement('div');
+      d.className = 'cell';
+      gridEl.appendChild(d);
     }
   }
 
-  // ---- optional leave button ----
-  const elLeaveBtn=$('#btn-leave');
-  if(elLeaveBtn){
-    elLeaveBtn.addEventListener('click',e=>{
-      e.preventDefault();
-      if(token){
-        fetch('/api/action',{method:'POST',headers:{'Content-Type':'application/json','X-Play-Token':token},body:JSON.stringify({action:'leave',room})}).finally(()=>location.href='/index.html');
-      }else{
-        location.href='/index.html';
+  function drawStones(board) {
+    stonesEl.innerHTML = '';
+    board.forEach((row, y) => {
+      [...row].forEach((ch, x) => {
+        if (ch === 'B' || ch === 'W') {
+          const el = document.createElement('div');
+          el.className = 'stone ' + (ch === 'B' ? 'black' : 'white');
+          const [cx, cy] = posCenter(x, y);
+          el.style.left = cx + 'px';
+          el.style.top = cy + 'px';
+          stonesEl.appendChild(el);
+        }
+      });
+    });
+  }
+
+  function drawLegals(legal) {
+    legalsEl.innerHTML = '';
+    if (!turn || seat !== turn) return;
+    for (const p of legal || []) {
+      const x = p.charCodeAt(0) - 97;
+      const y = parseInt(p.slice(1), 10) - 1;
+      const dot = document.createElement('div');
+      dot.className = 'legal';
+      const [cx, cy] = posCenter(x, y);
+      dot.style.left = cx + 'px';
+      dot.style.top = cy + 'px';
+      legalsEl.appendChild(dot);
+    }
+  }
+
+  stonesEl.parentElement.addEventListener('click', async (ev) => {
+    if (!turn || seat !== turn) return;
+    const rect = stonesEl.getBoundingClientRect();
+    const cs = parseFloat(getComputedStyle(document.documentElement).getPropertyValue('--cell-size'));
+    const gp = parseFloat(getComputedStyle(document.documentElement).getPropertyValue('--cell-gap'));
+    const xrel = ev.clientX - rect.left;
+    const yrel = ev.clientY - rect.top;
+    const x = Math.floor(xrel / (cs + gp));
+    const y = Math.floor(yrel / (cs + gp));
+    const pos = String.fromCharCode(97 + x) + (y + 1);
+
+    if (!token) return;
+    await fetch('/api/move', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'X-Play-Token': token },
+      body: JSON.stringify({ room, pos })
+    }).catch(()=>{});
+  });
+
+  function openSSE() {
+    if (sse) sse.close();
+    const u = new URL('/sse', location.origin);
+    u.searchParams.set('room', String(room));
+    u.searchParams.set('seat', seat);
+    u.searchParams.set('sse', sseId);
+    sse = new EventSource(u);
+
+    sse.addEventListener('room_state', (e) => {
+      const snap = JSON.parse(e.data);
+      if (leaveLatch) {
+        snap.status = 'leave'; // モーダル中は強制 leave 表示
+      }
+      status = snap.status;
+      turn = snap.turn;
+      setHUD(snap);
+      drawStones(snap.board.stones);
+      drawLegals(snap.legal);
+
+      // opponent-left detection
+      if (!leaveLatch && snap.status === 'leave' && seat !== 'observer') {
+        showModal('対戦相手が退出しました。');
       }
     });
   }
 
-  // boot
-  join();
+  async function join() {
+    const body = { action: 'join', room, seat: wantSeat, sse: sseId };
+    const res = await fetch('/api/action', {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(body)
+    });
+    const snap = await res.json();
+    const t = res.headers.get('X-Play-Token');
+    if (t) { token = t; localStorage.setItem('playToken', token); }
+    seat = snap.seat || 'observer';
+    status = snap.status; turn = snap.turn;
+
+    setHUD(snap);
+    buildGrid();
+    drawStones(snap.board.stones);
+    drawLegals(snap.legal);
+
+    openSSE();
+  }
+
+  const modal = q('#modal-backdrop');
+  const modalMsg = q('#modal-msg');
+  q('#modal-ok').onclick = () => {
+    hideModal();
+    leaveLatch = false;
+    status = 'waiting'; // 強制 waiting に戻す
+    setHUD({room, status, turn, watchers:0});
+  };
+  function showModal(text){ modalMsg.textContent = text; modal.style.display = 'flex'; leaveLatch = true; }
+  function hideModal(){ modal.style.display = 'none'; }
+
+  lobbyLink.onclick = async () => {
+    if (sse) { sse.close(); sse = null; }
+    await fetch('/api/action', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'X-Play-Token': token },
+      body: JSON.stringify({ action: 'leave', room, sse: sseId })
+    }).catch(()=>{});
+    location.href = '/';
+  };
+
+  (async () => { await join(); })();
 })();
