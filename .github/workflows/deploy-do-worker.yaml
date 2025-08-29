@@ -1,0 +1,28 @@
+name: Deploy Cloudflare Pages (no-build)
+
+on:
+  push:
+    branches: [ main ]
+    paths:
+      - 'public/**'
+      - 'functions/**'
+      - '.github/workflows/deploy-pages.yaml'
+  workflow_dispatch: {}
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Deploy Pages
+        uses: cloudflare/wrangler-action@v3
+        with:
+          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          command: >
+            pages deploy ./public
+            --project-name ${{ secrets.CF_PAGES_PROJECT }}
+            --branch main
