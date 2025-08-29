@@ -1,188 +1,155 @@
-// public/js/reverse.js -- v1.1.4 (debug: log response header/body)
+// public/js/reverse.js -- v1.1.6-debug (JOIN→SSE/room=<n> を監視しつつデバッグ表示)
 
 (function () {
-  // ---- tiny utils ---------------------------------------------------------
-  function qs(k) { const u = new URL(location.href); return u.searchParams.get(k); }
-  function $(s) { return document.querySelector(s); }
-  function randId() { return Math.random().toString(16).slice(2, 10); }
-  function enc(s) { return encodeURIComponent(s); }
+  // 便利関数
+  const $ = (s) => document.querySelector(s);
+  const now = () => new Date().toTimeString().slice(0, 8);
+  const qs = (k) => {
+    const u = new URL(location.href);
+    return u.searchParams.get(k);
+  };
+  const randId = () => Math.random().toString(16).slice(2, 10);
 
-  // ---- i18n (最小) --------------------------------------------------------
-  let MSG = { opponent_left: 'Opponent left' };
-  fetch('/i18n/system_messages.json').then(r => r.json()).then(all => {
-    const lang = (navigator.language || 'en').slice(0, 2);
-    if (all && all.opponent_left) MSG.opponent_left = all[lang]?.opponent_left || all.en || MSG.opponent_left;
-  }).catch(() => {});
+  // 画面要素
+  const elRoom = $("#room");
+  const elSeat = $("#seat");
+  const elTurn = $("#turn");
+  const elStatus = $("#status");
+  const elWatchers = $("#watchers");
+  const elBoard = $("#board");
+  const elDebug = $("#debug");
 
-  // ---- room / seats -------------------------------------------------------
-  const room = Math.min(4, Math.max(1, parseInt(qs('room') || '1', 10)));
-  const wantSeat = (qs('seat') || 'observer'); // 'black'|'white'|'observer'
+  // 状態
+  const room = Math.max(1, Math.min(4, parseInt(qs("room") || "1", 10)));
+  const wantSeat = (qs("seat") || "observer").toLowerCase(); // "black"/"white"/"observer"
   const sseId = randId();
+  let token = "";
+  let es = null;
 
-  // state
-  let token = '';
-  let mySeat = 'observer';
-  let lastStatus = null;
-  let hbTimer = null;
+  elRoom.textContent = String(room);
+  elSeat.textContent = wantSeat;
 
-  // HUD
-  $('#room-no').textContent = String(room);
-
-  // ---- board rendering ----------------------------------------------------
-  const elBoard  = $('#board');
-  const elGrid   = $('#grid');
-  const elStones = $('#stones');
-  const elLegals = $('#legals');
-
-  function createGrid() {
-    const frag = document.createDocumentFragment();
-    for (let y = 0; y < 8; y++) {
-      for (let x = 0; x < 8; x++) {
-        const c = document.createElement('div');
-        c.className = 'cell';
-        c.dataset.xy = String.fromCharCode(97 + x) + (y + 1); // a1..h8
-        frag.appendChild(c);
-      }
+  const log = (label, obj) => {
+    const header = `[${now()}] ${label}\n`;
+    if (typeof obj === "string") {
+      elDebug.textContent += header + obj + "\n\n";
+    } else {
+      elDebug.textContent += header + JSON.stringify(obj, null, 2) + "\n\n";
     }
-    elGrid.innerHTML = '';
-    elGrid.appendChild(frag);
-  }
+    elDebug.scrollTop = elDebug.scrollHeight;
+  };
 
-  function renderBoard(board, legal) {
-    if (!board || !Array.isArray(board.stones)) return;
-    const map = {};
-    (legal || []).forEach(p => (map[p] = true));
+  // 盤面描画（stones が配列のときのみ描画）←ここが以前逆条件になっていた
+  function renderBoard(board) {
+    if (!board || !Array.isArray(board.stones)) return; // ← 修正ポイント
+    const size = board.size || 8;
+    const tbl = document.createElement("table");
+    const tbody = document.createElement("tbody");
 
-    // stones
-    const stones = board.stones;
-    elStones.innerHTML = '';
-    const sf = document.createDocumentFragment();
-    for (let y = 0; y < 8; y++) {
-      const row = stones[y] || '--------';
-      for (let x = 0; x < 8; x++) {
-        const ch = row[x];
-        if (ch === 'W' || ch === 'B') {
-          const d = document.createElement('div');
-          d.className = 'stone ' + (ch === 'W' ? 'W' : 'B');
-          d.style.setProperty('--x', x);
-          d.style.setProperty('--y', y);
-          sf.appendChild(d);
+    for (let y = 0; y < size; y++) {
+      const tr = document.createElement("tr");
+      for (let x = 0; x < size; x++) {
+        const td = document.createElement("td");
+        const ch = (board.stones[y] || "-").charAt(x) || "-";
+        if (ch === "B" || ch === "W") {
+          const s = document.createElement("div");
+          s.className = "stone " + (ch === "B" ? "black" : "white");
+          td.appendChild(s);
         }
+        tr.appendChild(td);
       }
+      tbody.appendChild(tr);
     }
-    elStones.appendChild(sf);
-
-    // legal
-    elLegals.innerHTML = '';
-    const lf = document.createDocumentFragment();
-    for (let y = 0; y < 8; y++) {
-      for (let x = 0; x < 8; x++) {
-        const xy = String.fromCharCode(97 + x) + (y + 1);
-        if (map[xy]) {
-          const h = document.createElement('div');
-          h.className = 'legal';
-          h.style.setProperty('--x', x);
-          h.style.setProperty('--y', y);
-          h.dataset.xy = xy;
-          lf.appendChild(h);
-        }
-      }
-    }
-    elLegals.appendChild(lf);
+    tbl.appendChild(tbody);
+    elBoard.innerHTML = "";
+    elBoard.appendChild(tbl);
   }
 
-  // ---- debug print --------------------------------------------------------
-  const dbgEl = $('#debug-join');
-  function dbg(title, obj) {
-    if (!dbgEl) return;
-    const ts = new Date().toLocaleTimeString();
-    const head = title ? `[${ts}] ${title}\n` : '';
-    const body = obj !== undefined ? (typeof obj === 'string' ? obj : JSON.stringify(obj, null, 2)) : '';
-    dbgEl.textContent = (head + body + '\n\n' + dbgEl.textContent).slice(0, 12000);
+  // HUD 反映
+  function applySnapshot(snap) {
+    if (!snap) return;
+    if (snap.status) elStatus.textContent = snap.status;
+    if (typeof snap.turn !== "undefined" && snap.turn !== null) {
+      elTurn.textContent = snap.turn === "black" ? "●" : snap.turn === "white" ? "○" : "-";
+    }
+    if (typeof snap.watchers === "number") elWatchers.textContent = String(snap.watchers);
+    if (snap.board) renderBoard(snap.board);
   }
 
-  // ---- join / heartbeat / sse --------------------------------------------
-  async function join() {
-    const body = { action: 'join', room, seat: wantSeat, sse: sseId };
-    dbg('JOIN body', body);
+  // JOIN → token 取得 → 初期盤面反映 → SSE 接続
+  async function joinAndListen() {
+    // JOIN body（送信前ログ）
+    const body = { action: "join", room, seat: wantSeat, sse: sseId };
+    log("JOIN body", body);
 
+    // 送信
     let res;
     try {
-      res = await fetch('/api/action', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(body)
+      res = await fetch("/api/action", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
       });
     } catch (e) {
-      dbg('JOIN fetch error', String(e));
+      log("JOIN fetch error", String(e));
       return;
     }
 
-    // header
-    const tk = res.headers.get('X-Play-Token') || '';
-    if (tk) token = tk;
-    dbg('JOIN response header', { status: res.status, token });
+    // レスポンス（raw 先頭512B）とヘッダ
+    const raw = await res.text();
+    log("JOIN response raw(<=512B)", raw.slice(0, 512));
+    token = res.headers.get("X-Play-Token") || "";
+    log("JOIN response header", { status: res.status, token: token ? token : "(none)" });
 
-    // body(raw -> json)
-    let raw = '';
-    try { raw = await res.text(); } catch (e) {}
-    dbg('JOIN response raw(<=512B)', raw.slice(0, 512));
-
-    let snap = null;
-    try { snap = raw ? JSON.parse(raw) : null; } catch (e) {
-      dbg('JOIN JSON parse error', String(e));
+    // 初期スナップショットを適用（200 のときのみ）
+    try {
+      if (res.ok) {
+        const snap = JSON.parse(raw);
+        applySnapshot(snap);
+      }
+    } catch (_) {
+      /* noop: raw が JSON でないケースも許容（仕様上はJSONのはず） */
     }
 
-    if (snap && snap.seat) mySeat = snap.seat;
-    applySnapshot(snap);
-
-    // SSE & HB
-    startSse();
-    startHeartbeat();
-    window.addEventListener('pagehide', beaconLeave);
-  }
-
-  function startHeartbeat() {
-    if (!token) return;
-    if (hbTimer) clearInterval(hbTimer);
-    hbTimer = setInterval(() => {
-      fetch('/api/action', { method: 'POST', headers: { 'X-Play-Token': token } }).catch(() => {});
-    }, 7000);
-  }
-
-  function beaconLeave() {
-    try {
-      navigator.sendBeacon('/api/action', JSON.stringify({ action: 'leave', room, sse: sseId }));
-    } catch {}
-  }
-
-  function startSse() {
-    const url = `/?room=${room}&seat=${enc(mySeat || 'observer')}&sse=${enc(sseId)}`;
-    const es = new EventSource(url);
-    es.addEventListener('room_state', ev => {
-      dbg('SSE event room_state (len)', String(ev.data?.length ?? 0));
+    // SSE 接続（room 固定で監視。seat/sse はサーバ側で利用しているなら付与）
+    const url = `/?room=${room}&seat=${encodeURIComponent(wantSeat)}&sse=${encodeURIComponent(sseId)}`;
+    es = new EventSource(url);
+    es.addEventListener("open", () => log("SSE open", url));
+    es.addEventListener("error", () => log("SSE error", "(auto-retry by browser)"));
+    es.addEventListener("room_state", (ev) => {
       try {
-        const snap = JSON.parse(ev.data);
-        applySnapshot(snap);
+        const data = JSON.parse(ev.data);
+        log("SSE room_state", data); // デバッグ欄へそのまま
+        // 自分の部屋だけ抜き出して反映（/room=all を受けた場合に備えても安全）
+        const myRoom =
+          data.room === room ? data : // /?room=1 形式
+          data.rooms && data.rooms[String(room)] ? data.rooms[String(room)] : null; // /?room=all 形式
+        if (myRoom) {
+          // ロビー形式なら正規化（最低限のキーのみ）
+          applySnapshot({
+            status: myRoom.status,
+            turn: myRoom.turn,
+            board: myRoom.board,
+            watchers: typeof myRoom.watchers === "number" ? myRoom.watchers : 0,
+          });
+        }
       } catch (e) {
-        dbg('SSE parse error', String(e));
+        log("SSE parse error", String(e));
       }
     });
-    es.onerror = () => { /* silent */ };
+
+    // ページ離脱時に早期退室（既存仕様のまま）
+    const beacon = () => {
+      try {
+        navigator.sendBeacon("/api/action", JSON.stringify({ action: "leave", room, sse: sseId }));
+      } catch (_) {}
+    };
+    window.addEventListener("pagehide", beacon);
+    window.addEventListener("beforeunload", beacon);
   }
 
-  // ---- snapshot -> UI -----------------------------------------------------
-  function applySnapshot(snap) {
-    if (!snap) return;
-    $('#seat-now').textContent = snap.seat || mySeat || '-';
-    $('#status').textContent = snap.status || '-';
-    $('#turn').textContent = snap.turn === 'black' ? '●'
-                       : snap.turn === 'white' ? '○' : '–';
-    $('#watchers').textContent = String(snap.watchers ?? 0);
-    if (snap.board) renderBoard(snap.board, snap.legal || []);
-  }
-
-  // ---- init ---------------------------------------------------------------
-  createGrid();
-  join().catch(err => dbg('JOIN error', String(err)));
+  // 起動
+  document.addEventListener("DOMContentLoaded", () => {
+    joinAndListen();
+  });
 })();
