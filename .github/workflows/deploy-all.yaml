@@ -54,9 +54,23 @@ jobs:
       - uses: actions/checkout@v4
       - name: Export branch
         run: echo "BRANCH=${GITHUB_REF_NAME}" >> $GITHUB_ENV
+
       - name: Deploy Cloudflare Pages (wrangler)
         uses: cloudflare/wrangler-action@v3
         with:
           apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
           command: pages deploy ./public --project-name ${{ secrets.CF_PAGES_PROJECT }} --branch ${{ env.BRANCH }}
+
+      # --- Debug steps ---
+      - name: Debug: show CWD and functions
+        run: |
+          echo "=== Current directory ==="
+          pwd
+          echo "=== List root ==="
+          ls -la
+          echo "=== List functions dir ==="
+          ls -la functions || true
+
+      - name: List last deployments
+        run: npx wrangler pages deployments list --project-name "${{ secrets.CF_PAGES_PROJECT }}" --limit 5
