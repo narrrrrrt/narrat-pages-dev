@@ -2,7 +2,7 @@ name: Deploy DO + Pages (ordered)
 
 on:
   push:
-    branches: ['**']          # すべてのブランチ
+    branches: ['*']   # すべてのブランチで発火
     paths:
       - 'public/**'
       - 'functions/**'
@@ -22,8 +22,6 @@ jobs:
       pages_changed: ${{ steps.changes.outputs.pages }}
     steps:
       - uses: actions/checkout@v4
-
-      # 変更検出（Pages と DO を分けて判定）
       - id: changes
         uses: dorny/paths-filter@v3
         with:
@@ -34,20 +32,12 @@ jobs:
               - 'public/**'
               - 'functions/**'
 
-      # デバッグ（安全な複数行 run）
-      - name: Debug – changed flags
-        run: |
-          echo "BRANCH=${GITHUB_REF_NAME}"
-          echo "DO_CHANGED=${{ steps.changes.outputs.do }}"
-          echo "PAGES_CHANGED=${{ steps.changes.outputs.pages }}"
-
   deploy_do:
     runs-on: ubuntu-latest
     needs: detect
     if: needs.detect.outputs.do_changed == 'true'
     steps:
       - uses: actions/checkout@v4
-
       - name: Deploy Durable Object (wrangler)
         uses: cloudflare/wrangler-action@v3
         with:
@@ -58,23 +48,18 @@ jobs:
 
   deploy_pages:
     runs-on: ubuntu-latest
-    needs: [detect, deploy_do]     # DO が変わってる時は DO → Pages の順
+    needs: [detect, deploy_do]
     if: needs.detect.outputs.pages_changed == 'true' || needs.detect.outputs.do_changed == 'true'
-    env:
-      BRANCH: ${{ github.ref_name }}
     steps:
       - uses: actions/checkout@v4
-
       - name: Debug – branch for Pages
-        run: |
-          echo "Deploying Pages project=${{ secrets.CF_PAGES_PROJECT }} on branch=${BRANCH}"
-
+        run: echo "BRANCH=${GITHUB_REF_NAME}" >> $GITHUB_ENV
       - name: Deploy Cloudflare Pages (wrangler)
         uses: cloudflare/wrangler-action@v3
         with:
           apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-          command: |
-            pages deploy ./public \
-              --project-name ${{ secrets.CF_PAGES_PROJECT }} \
-              --branch "${{ env.BRANCH }}"
+          command: >
+            pages deploy ./public
+            --project-name ${{ secrets.CF_PAGES_PROJECT }}
+            --branch ${{ env.BRANCH }}
