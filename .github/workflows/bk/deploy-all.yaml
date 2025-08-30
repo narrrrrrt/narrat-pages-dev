@@ -1,0 +1,75 @@
+name: Deploy DO + Pages (ordered)
+
+on:
+  push:
+    branches: ['**']   # すべてのブランチで動く
+    paths:
+      - 'public/**'
+      - 'functions/**'
+      - 'workers/do-worker/**'
+      - '.github/workflows/deploy-all.yaml'
+  workflow_dispatch: {}
+
+concurrency:
+  group: deploy-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  detect:
+    runs-on: ubuntu-latest
+    outputs:
+      do_changed: ${{ steps.changes.outputs.do }}
+      pages_changed: ${{ steps.changes.outputs.pages }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: changes
+        uses: dorny/paths-filter@v3
+        with:
+          filters: |
+            do:
+              - 'workers/do-worker/**'
+            pages:
+              - 'public/**'
+              - 'functions/**'
+
+  deploy_do:
+    runs-on: ubuntu-latest
+    needs: detect
+    if: needs.detect.outputs.do_changed == 'true'
+    steps:
+      - uses: actions/checkout@v4
+      - name: Deploy Durable Object (wrangler)
+        uses: cloudflare/wrangler-action@v3
+        with:
+          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          workingDirectory: workers/do-worker
+          command: deploy
+
+  deploy_pages:
+    runs-on: ubuntu-latest
+    needs: [detect, deploy_do]
+    if: needs.detect.outputs.pages_changed == 'true' || needs.detect.outputs.do_changed == 'true'
+    steps:
+      - uses: actions/checkout@v4
+      - name: Export branch
+        run: echo "BRANCH=${GITHUB_REF_NAME}" >> $GITHUB_ENV
+
+      - name: Deploy Cloudflare Pages (wrangler)
+        uses: cloudflare/wrangler-action@v3
+        with:
+          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          command: pages deploy ./public --project-name ${{ secrets.CF_PAGES_PROJECT }} --branch ${{ env.BRANCH }}
+
+      - name: Debug: show CWD and functions
+        run: |
+          echo "=== Current directory ==="
+          pwd
+          echo "=== List root ==="
+          ls -la
+          echo "=== List functions dir ==="
+          ls -la functions || true
+
+      - name: Debug: list last deployments
+        run: npx wrangler pages deployments list --project-name "${{ secrets.CF_PAGES_PROJECT }}" --limit 5
