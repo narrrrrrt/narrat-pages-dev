@@ -12,4 +12,4 @@ new_sqlite_classes = ["ReversiHub"]
 
 [[r2_buckets]]
 binding = "CFLOGS"
-bucket_name = "cflogs"
+bucket_name = "cf-logs"
