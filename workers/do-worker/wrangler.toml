@@ -9,3 +9,7 @@ class_name = "ReversiHub"
 [[migrations]]
 tag = "v1"
 new_sqlite_classes = ["ReversiHub"]
+
+[[r2_buckets]]
+binding = "CFLOGS"
+bucket_name = "cflogs"
