@@ -2,14 +2,6 @@ name = "reversi-do-worker"
 main = "worker.ts"
 compatibility_date = "2025-08-01"
 
-[[durable_objects.bindings]]
-name = "REVERSI_HUB"
-class_name = "ReversiHub"
-
 [[migrations]]
 tag = "v1"
 new_sqlite_classes = ["ReversiHub"]
-
-[[r2_buckets]]
-binding = "CFLOGS"
-bucket_name = "cf-logs"
