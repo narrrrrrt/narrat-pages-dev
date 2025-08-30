@@ -2,7 +2,7 @@ name: Deploy DO + Pages (ordered)
 
 on:
   push:
-    branches: ['**']  # すべてのブランチで発火
+    branches: ['**']   # すべてのブランチで動く
     paths:
       - 'public/**'
       - 'functions/**'
@@ -18,8 +18,8 @@ jobs:
   detect:
     runs-on: ubuntu-latest
     outputs:
-      do_changed:   ${{ steps.changes.outputs.do }}
-      pages_changed:${{ steps.changes.outputs.pages }}
+      do_changed: ${{ steps.changes.outputs.do }}
+      pages_changed: ${{ steps.changes.outputs.pages }}
     steps:
       - uses: actions/checkout@v4
       - id: changes
@@ -41,29 +41,22 @@ jobs:
       - name: Deploy Durable Object (wrangler)
         uses: cloudflare/wrangler-action@v3
         with:
-          apiToken:  ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-          workingDirectory: workers/do-worker   # ← wrangler.toml がある場所
+          workingDirectory: workers/do-worker
           command: deploy
 
   deploy_pages:
     runs-on: ubuntu-latest
-    needs: [detect, deploy_do]   # DO の後に必ず実行（DOがスキップでもOK）
-    # Pages に変更がある OR DO をデプロイした場合は必ず Pages も出す
+    needs: [detect, deploy_do]
     if: needs.detect.outputs.pages_changed == 'true' || needs.detect.outputs.do_changed == 'true'
     steps:
       - uses: actions/checkout@v4
-
       - name: Export branch
         run: echo "BRANCH=${GITHUB_REF_NAME}" >> $GITHUB_ENV
-
       - name: Deploy Cloudflare Pages (wrangler)
         uses: cloudflare/wrangler-action@v3
         with:
-          apiToken:  ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-          # public ディレクトリをそのまま配信する前提。ビルドが必要なら前段にビルド追加。
-          command: >
-            pages deploy ./public
-            --project-name ${{ secrets.CF_PAGES_PROJECT }}
-            --branch ${{ env.BRANCH }}
+          command: pages deploy ./public --project-name ${{ secrets.CF_PAGES_PROJECT }} --branch ${{ env.BRANCH }}
